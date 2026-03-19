@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 from core.schemas import ListingRecord
-from services.freshness import validate_listing
+from services.freshness import compute_freshness_hours, validate_listing
 
 
 def test_expired_listing_is_detected() -> None:
@@ -32,3 +32,10 @@ def test_validate_listing_overrides_overly_optimistic_status() -> None:
     )
     validated = validate_listing(listing)
     assert validated.listing_status == "expired"
+
+
+def test_compute_freshness_hours_preserves_time_precision() -> None:
+    posted_at = datetime.now(timezone.utc) - timedelta(hours=25, minutes=30)
+    freshness_hours = compute_freshness_hours(posted_at)
+    assert freshness_hours is not None
+    assert 25.0 <= freshness_hours <= 26.0

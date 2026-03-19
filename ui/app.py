@@ -75,9 +75,9 @@ def format_timestamp(value: Optional[str]) -> str:
         return ""
     try:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-        return parsed.strftime("%Y-%m-%d")
+        return parsed.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
     except ValueError:
-        return str(value)[:10]
+        return str(value)
 
 
 def parse_timestamp(value: Optional[str]) -> Optional[datetime]:
@@ -377,9 +377,18 @@ def render_detail(lead: dict[str, Any], key: str) -> None:
             st.write(
                 "Liveness evidence: "
                 f"status={liveness.get('listing_status')}, "
+                f"freshness_hours={liveness.get('freshness_hours')}, "
                 f"freshness_days={liveness.get('freshness_days')}, "
                 f"expiration_confidence={liveness.get('expiration_confidence')}, "
                 f"http_status={liveness.get('http_status') or 'n/a'}"
+            )
+            st.caption(
+                "Timestamps: "
+                f"posted={format_timestamp(lead.get('posted_at')) or 'n/a'} | "
+                f"first_published={format_timestamp(evidence.get('first_published_at')) or 'n/a'} | "
+                f"discovered={format_timestamp(evidence.get('discovered_at')) or 'n/a'} | "
+                f"last_seen={format_timestamp(evidence.get('last_seen_at')) or 'n/a'} | "
+                f"updated={format_timestamp(evidence.get('updated_at')) or 'n/a'}"
             )
         if evidence.get("resolution_story"):
             st.write("Resolution story:")

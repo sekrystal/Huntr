@@ -22,7 +22,7 @@ def init_db() -> None:
     inspector = inspect(engine)
     expected_columns = {
         "signals": {"signal_status"},
-        "listings": {"listing_status", "freshness_days"},
+        "listings": {"listing_status", "freshness_hours", "freshness_days", "first_published_at", "last_seen_at"},
         "leads": {"lead_type", "rank_label", "qualification_fit_label", "last_agent_action"},
         "candidate_profiles": {"core_titles_json", "minimum_fit_threshold"},
         "source_queries": {"performance_stats_json"},

@@ -76,11 +76,13 @@ class GreenhouseConnector:
         self.last_failure_classification: str | None = None
         self.last_quarantine_count: int = 0
         self.last_item_count: int = 0
+        self.last_board_counts: dict[str, int] = {}
 
     def fetch(self, require_live: bool = False) -> tuple[list[dict], bool]:
         self.last_quarantine_count = 0
         self.last_item_count = 0
         self.last_failure_classification = None
+        self.last_board_counts = {}
         if self.settings.greenhouse_tokens:
             try:
                 self.last_error = None
@@ -106,6 +108,8 @@ class GreenhouseConnector:
         for token in board_tokens:
             try:
                 board_jobs = self._fetch_board_with_retry(token)
+                self.last_board_counts[token] = len(board_jobs)
+                logger.info("Greenhouse board %s returned %s jobs before normalization.", token, len(board_jobs))
                 for job in board_jobs:
                     normalized = self._sanitize_live_job(job, token)
                     if normalized is None:
@@ -114,6 +118,7 @@ class GreenhouseConnector:
                     jobs.append(normalized)
             except GreenhouseFetchError as exc:
                 partial_failures.append(f"{token}:{exc.classification}")
+                logger.warning("Greenhouse board %s failed with %s", token, exc.classification)
         if not jobs and partial_failures:
             raise GreenhouseFetchError(
                 "transient_network" if any("transient" in item for item in partial_failures) else "source_unavailable",

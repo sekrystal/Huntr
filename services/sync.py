@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from functools import partial
 from collections import defaultdict
 from typing import Optional
@@ -31,6 +31,28 @@ from services.resolve_company import get_or_create_company, queue_recheck, resol
 
 def _source_learning(profile) -> dict:
     return (profile.extracted_summary_json or {}).get("learning", {})
+
+
+def _ensure_utc_datetime(value):
+    if value is None:
+        return None
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if not isinstance(value, datetime):
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _isoformat_utc(value):
+    normalized = _ensure_utc_datetime(value)
+    if not normalized:
+        return None
+    return normalized.isoformat().replace("+00:00", "Z")
 
 
 def _upsert_signal(session: Session, record: SignalRecord) -> Signal:
@@ -65,6 +87,9 @@ def _upsert_listing(session: Session, record: ListingRecord, company_id: Optiona
             if value is not None and getattr(existing, key) != value:
                 setattr(existing, key, value)
                 material_changed = True
+        if existing.last_seen_at != payload.get("last_seen_at"):
+            existing.last_seen_at = payload.get("last_seen_at") or datetime.now(timezone.utc)
+            material_changed = True
         if material_changed:
             existing.updated_at = datetime.utcnow()
         return existing, False
@@ -116,7 +141,12 @@ def _authoritative_listing_context(session: Session, lead: Lead) -> dict:
     return {
         "listing": listing,
         "url": (listing.url if listing else evidence.get("url")),
-        "posted_at": listing.posted_at if listing else None,
+        "posted_at": _ensure_utc_datetime(listing.posted_at) if listing else _ensure_utc_datetime(evidence.get("posted_at")),
+        "first_published_at": _ensure_utc_datetime(listing.first_published_at) if listing else _ensure_utc_datetime(evidence.get("first_published_at")),
+        "discovered_at": _ensure_utc_datetime(listing.discovered_at) if listing else _ensure_utc_datetime(evidence.get("discovered_at")),
+        "last_seen_at": _ensure_utc_datetime(listing.last_seen_at) if listing else _ensure_utc_datetime(evidence.get("last_seen_at")),
+        "updated_at": _ensure_utc_datetime(listing.updated_at) if listing else _ensure_utc_datetime(evidence.get("updated_at")),
+        "freshness_hours": listing.freshness_hours if listing else evidence.get("freshness_hours"),
         "freshness_days": listing.freshness_days if listing else evidence.get("freshness_days"),
         "listing_status": listing.listing_status if listing else evidence.get("listing_status"),
         "expiration_confidence": listing.expiration_confidence if listing else evidence.get("expiration_confidence", 0.0),
@@ -172,10 +202,12 @@ def evaluate_critic_decision(
     url = context["url"]
     listing_status = context["listing_status"]
     freshness_days = context["freshness_days"]
+    freshness_hours = context["freshness_hours"]
     expiration_confidence = context["expiration_confidence"] or 0.0
     page_text = context["page_text"]
     description_text = context["description_text"]
     http_status = context["http_status"]
+    last_seen_at = context["last_seen_at"]
     reasons: list[str] = []
     status = "visible"
     suppression_category = "none"
@@ -203,12 +235,22 @@ def evaluate_critic_decision(
             reasons.append("Expired text pattern detected in job content")
             status = "suppressed"
             suppression_category = "expired"
+        if last_seen_at is None:
+            reasons.append("Listing has no last-seen timestamp from connector fetches")
+            status = "uncertain"
+            suppression_category = "uncertain"
+        else:
+            age_since_seen_hours = max((datetime.now(timezone.utc) - last_seen_at).total_seconds() / 3600, 0.0)
+            if age_since_seen_hours > 48:
+                reasons.append(f"Listing has not been seen in {round(age_since_seen_hours, 1)} hours")
+                status = "suppressed"
+                suppression_category = "non_live"
         if listing_status in {"expired", "suspected_expired"}:
             reasons.append(f"Listing status is {listing_status}")
             status = "suppressed"
             suppression_category = "expired"
-        elif listing_status != "active":
-            if freshness_days is not None and freshness_days <= 3 and expiration_confidence < 0.2:
+        elif listing_status != "active" and status == "visible":
+            if freshness_hours is not None and freshness_hours <= 72 and expiration_confidence < 0.2:
                 reasons.append("Listing is recent but liveness is still uncertain")
                 status = "uncertain"
                 suppression_category = "uncertain"
@@ -216,15 +258,15 @@ def evaluate_critic_decision(
                 reasons.append(f"Listing status is {listing_status or 'unknown'}")
                 status = "uncertain"
                 suppression_category = "uncertain"
-        if freshness_days is None:
+        if freshness_hours is None and status == "visible":
             reasons.append("No reliable posted date found")
             status = "uncertain"
             suppression_category = "uncertain"
-        elif freshness_window_days is not None and freshness_days > freshness_window_days:
+        elif freshness_hours is not None and freshness_window_days is not None and freshness_hours > freshness_window_days * 24:
             reasons.append(f"Freshness exceeded the default {freshness_window_days}-day window")
             status = "suppressed"
             suppression_category = "stale"
-        if lead.confidence_label == "low":
+        if lead.confidence_label == "low" and status == "visible":
             reasons.append("Confidence is too low for default surfaced listings")
             status = "uncertain"
             suppression_category = "uncertain"
@@ -242,24 +284,24 @@ def evaluate_critic_decision(
             status = "uncertain"
             suppression_category = "uncertain"
 
-    if lead.qualification_fit_label in {"underqualified", "overqualified"}:
+    if lead.qualification_fit_label in {"underqualified", "overqualified"} and status == "visible":
         reasons.append(f"Qualification fit is {lead.qualification_fit_label}")
         status = "hidden"
         suppression_category = "qualification"
 
-    if (lead.score_breakdown_json or {}).get("composite", 0.0) < profile.minimum_fit_threshold:
+    if (lead.score_breakdown_json or {}).get("composite", 0.0) < profile.minimum_fit_threshold and status == "visible":
         reasons.append("Composite fit is below the candidate threshold")
         status = "hidden"
         suppression_category = "low_fit"
 
-    if lead.company_name.lower() in [item.lower() for item in (profile.excluded_companies_json or [])]:
+    if lead.company_name.lower() in [item.lower() for item in (profile.excluded_companies_json or [])] and status == "visible":
         reasons.append("Company is muted in the candidate profile")
         status = "hidden"
         suppression_category = "user_suppressed"
 
     if lead.lead_type == "signal":
         signal = session.get(Signal, lead.signal_id) if lead.signal_id else None
-        if signal and signal.signal_status in {"needs_recheck", "resolved_no_listing"}:
+        if signal and signal.signal_status in {"needs_recheck", "resolved_no_listing"} and status == "visible":
             status = "investigation"
             reasons = reasons or ["Weak signal is under investigation without a confirmed active listing"]
             suppression_category = "investigation"
@@ -278,14 +320,24 @@ def evaluate_critic_decision(
         "suppression_category": suppression_category,
         "authoritative_url": url,
         "listing_status": listing_status,
+        "freshness_hours": freshness_hours,
         "freshness_days": freshness_days,
         "posted_at": context["posted_at"],
+        "first_published_at": context["first_published_at"],
+        "discovered_at": context["discovered_at"],
+        "last_seen_at": context["last_seen_at"],
+        "updated_at": context["updated_at"],
         "liveness_evidence": {
             "listing_status": listing_status,
+            "freshness_hours": freshness_hours,
             "freshness_days": freshness_days,
             "expiration_confidence": round(expiration_confidence, 2),
             "http_status": http_status,
             "expired_pattern_detected": has_expired_pattern(description_text, page_text),
+            "first_published_at": context["first_published_at"],
+            "discovered_at": context["discovered_at"],
+            "last_seen_at": context["last_seen_at"],
+            "updated_at": context["updated_at"],
         },
         "ai_critic_assessment": ai_critic,
     }
@@ -313,8 +365,18 @@ def apply_critic_decision_to_lead(
     evidence["liveness_evidence"] = decision["liveness_evidence"]
     evidence["ai_critic_assessment"] = decision.get("ai_critic_assessment")
     evidence["listing_status"] = decision["listing_status"]
+    evidence["freshness_hours"] = decision["freshness_hours"]
     evidence["freshness_days"] = decision["freshness_days"]
     evidence["url"] = decision["authoritative_url"]
+    evidence["posted_at"] = _isoformat_utc(decision["posted_at"])
+    evidence["first_published_at"] = _isoformat_utc(decision["first_published_at"])
+    evidence["discovered_at"] = _isoformat_utc(decision["discovered_at"])
+    evidence["last_seen_at"] = _isoformat_utc(decision["last_seen_at"])
+    evidence["updated_at"] = _isoformat_utc(decision["updated_at"])
+    liveness = dict(evidence.get("liveness_evidence") or {})
+    for key in ("first_published_at", "discovered_at", "last_seen_at", "updated_at"):
+        liveness[key] = _isoformat_utc(liveness.get(key))
+    evidence["liveness_evidence"] = liveness
     lead.evidence_json = evidence
     lead.hidden = not decision["visible"]
     return decision
@@ -411,6 +473,7 @@ def _upsert_lead(
             "matched_profile_fields": breakdown.get("matched_profile_fields", []),
             "feedback_notes": feedback_notes,
             "freshness_status": freshness_label,
+            "freshness_hours": listing.freshness_hours if listing else 0.0,
             "freshness_days": listing.freshness_days if listing else 0,
             "confidence_status": breakdown["confidence_label"],
             "listing_status": listing_status,
@@ -418,6 +481,9 @@ def _upsert_lead(
             "source_platform": "x_demo" if source_type == "x" else source_type,
             "company_domain": company_domain,
             "url": listing_url,
+            "first_published_at": listing.first_published_at.isoformat() if listing and listing.first_published_at else None,
+            "discovered_at": listing.discovered_at.isoformat() if listing and listing.discovered_at else None,
+            "last_seen_at": listing.last_seen_at.isoformat() if listing and listing.last_seen_at else None,
             "ai_fit_assessment": ai_fit,
         }
     )
@@ -575,7 +641,7 @@ def sync_all(
                 location=matching_listing.location,
                 description_text=f"{matching_listing.description_text or ''}\n{signal.raw_text}",
                 listing_status=matching_listing.listing_status,
-                freshness_label=classify_freshness_label(matching_listing.freshness_days),
+                freshness_label=classify_freshness_label(matching_listing.freshness_days, matching_listing.freshness_hours),
                 evidence_json={
                     "snippets": [signal.raw_text[:220], (matching_listing.description_text or "")[:220]],
                     "source_queries": [
@@ -678,7 +744,7 @@ def sync_all(
             location=listing.location,
             description_text=listing.description_text or "",
             listing_status=listing.listing_status,
-            freshness_label=classify_freshness_label(listing.freshness_days),
+            freshness_label=classify_freshness_label(listing.freshness_days, listing.freshness_hours),
             evidence_json={
                 "snippets": [(listing.description_text or "")[:240]],
                 "source_queries": query_texts,
@@ -744,6 +810,7 @@ def list_leads(
         )
         authoritative = _authoritative_listing_context(session, lead)
         freshness_days = decision["freshness_days"]
+        freshness_hours = decision["freshness_hours"]
         listing_status = decision["listing_status"]
         source_type = evidence.get("source_type", lead.lead_type)
         application = session.scalar(select(Application).where(Application.lead_id == lead.id))
@@ -770,7 +837,7 @@ def list_leads(
                 pass
             else:
                 continue
-        if freshness_window_days is not None and freshness_days is not None and freshness_days > freshness_window_days:
+        if freshness_window_days is not None and freshness_hours is not None and freshness_hours > freshness_window_days * 24:
             continue
 
         response_evidence = dict(evidence)
@@ -780,8 +847,14 @@ def list_leads(
         response_evidence["suppression_category"] = decision["suppression_category"]
         response_evidence["liveness_evidence"] = decision["liveness_evidence"]
         response_evidence["listing_status"] = listing_status
+        response_evidence["freshness_hours"] = freshness_hours
         response_evidence["freshness_days"] = freshness_days
         response_evidence["url"] = decision["authoritative_url"]
+        response_evidence["posted_at"] = _isoformat_utc(decision["posted_at"])
+        response_evidence["first_published_at"] = _isoformat_utc(decision["first_published_at"])
+        response_evidence["discovered_at"] = _isoformat_utc(decision["discovered_at"])
+        response_evidence["last_seen_at"] = _isoformat_utc(decision["last_seen_at"])
+        response_evidence["updated_at"] = _isoformat_utc(decision["updated_at"])
 
         items.append(
             LeadResponse(
@@ -792,9 +865,14 @@ def list_leads(
                 url=decision["authoritative_url"],
                 source_type=source_type,
                 listing_status=listing_status,
+                first_published_at=_ensure_utc_datetime(decision["first_published_at"]),
+                discovered_at=_ensure_utc_datetime(decision["discovered_at"]),
+                last_seen_at=_ensure_utc_datetime(decision["last_seen_at"]),
+                updated_at=_ensure_utc_datetime(decision["updated_at"] or lead.updated_at),
+                freshness_hours=freshness_hours,
                 freshness_days=freshness_days,
-                posted_at=decision["posted_at"],
-                surfaced_at=lead.surfaced_at,
+                posted_at=_ensure_utc_datetime(decision["posted_at"]),
+                surfaced_at=_ensure_utc_datetime(lead.surfaced_at),
                 rank_label=lead.rank_label,
                 confidence_label=lead.confidence_label,
                 freshness_label=lead.freshness_label,
@@ -804,10 +882,10 @@ def list_leads(
                 saved=saved,
                 applied=applied,
                 current_status=current_status,
-                date_saved=application.date_saved if application else None,
-                date_applied=application.date_applied if application else None,
+                date_saved=_ensure_utc_datetime(application.date_saved) if application else None,
+                date_applied=_ensure_utc_datetime(application.date_applied) if application else None,
                 application_notes=application.notes if application else None,
-                application_updated_at=application.updated_at if application else None,
+                application_updated_at=_ensure_utc_datetime(application.updated_at) if application else None,
                 next_action=next_action,
                 follow_up_due=follow_up_due,
                 explanation=lead.explanation,

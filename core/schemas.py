@@ -44,10 +44,13 @@ class ListingRecord(BaseModel):
     url: str
     source_type: str
     posted_at: Optional[datetime] = None
+    first_published_at: Optional[datetime] = None
     discovered_at: Optional[datetime] = None
+    last_seen_at: Optional[datetime] = None
     description_text: Optional[str] = None
     listing_status: str = "unknown"
     expiration_confidence: float = 0.0
+    freshness_hours: Optional[float] = None
     freshness_days: Optional[int] = None
     metadata_json: dict[str, Any] = Field(default_factory=dict)
 
@@ -106,6 +109,11 @@ class LeadResponse(BaseModel):
     url: Optional[str] = None
     source_type: str
     listing_status: Optional[str] = None
+    first_published_at: Optional[datetime] = None
+    discovered_at: Optional[datetime] = None
+    last_seen_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    freshness_hours: Optional[float] = None
     freshness_days: Optional[int] = None
     posted_at: Optional[datetime] = None
     surfaced_at: datetime
