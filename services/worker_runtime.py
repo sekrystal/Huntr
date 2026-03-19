@@ -9,12 +9,13 @@ from core.config import Settings
 from services.activity import log_agent_activity
 from services.ops import get_runtime_connector_set
 from services.pipeline import run_full_pipeline
-from services.runtime_control import determine_cycle_mode, mark_cycle_started, mark_cycle_success
+from services.runtime_control import determine_cycle_mode, mark_cycle_started, mark_cycle_success, mark_worker_state
 
 
 def run_worker_cycle(session: Session, settings: Settings) -> dict[str, Any]:
     cycle_mode, control = determine_cycle_mode(session, settings)
     if cycle_mode == "disabled":
+        mark_worker_state(control, "idle", "Worker is idle because autonomy is disabled.")
         log_agent_activity(
             session,
             "Worker",
@@ -26,6 +27,7 @@ def run_worker_cycle(session: Session, settings: Settings) -> dict[str, Any]:
         return {"state": "disabled", "ran": False, "summary": "Autonomy disabled."}
 
     if cycle_mode == "paused":
+        mark_worker_state(control, "paused", "Worker is paused. Press Play or Run once to resume.")
         log_agent_activity(
             session,
             "Worker",
@@ -38,6 +40,7 @@ def run_worker_cycle(session: Session, settings: Settings) -> dict[str, Any]:
 
     source_mode, enabled_connectors, strict_live_connectors = get_runtime_connector_set(settings)
     if not enabled_connectors:
+        mark_worker_state(control, "idle", "Worker is idle because no live connectors are enabled.")
         log_agent_activity(
             session,
             "Worker",
@@ -49,6 +52,15 @@ def run_worker_cycle(session: Session, settings: Settings) -> dict[str, Any]:
         return {"state": "no_connectors", "ran": False, "summary": "No connectors enabled."}
 
     mark_cycle_started(control)
+    log_agent_activity(
+        session,
+        "Worker",
+        "starting cycle",
+        f"Worker cycle started at {datetime.utcnow().isoformat()} and is fetching/scoring leads.",
+        target_type="worker",
+        target_count=1,
+    )
+    session.commit()
     response = run_full_pipeline(
         session,
         source_mode=source_mode,
@@ -65,4 +77,3 @@ def run_worker_cycle(session: Session, settings: Settings) -> dict[str, Any]:
         target_count=1,
     )
     return {"state": cycle_mode, "ran": True, "summary": response.summary}
-

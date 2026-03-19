@@ -279,9 +279,13 @@ class RuntimeControl(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     run_state: Mapped[str] = mapped_column(String(50), default="paused", index=True)
+    worker_state: Mapped[str] = mapped_column(String(50), default="idle", index=True)
     run_once_requested: Mapped[bool] = mapped_column(Boolean, default=False)
     last_cycle_started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     last_successful_cycle_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    last_heartbeat_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    sleep_until: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    status_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     last_cycle_summary: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)

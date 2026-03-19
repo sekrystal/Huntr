@@ -33,7 +33,15 @@ def init_db() -> None:
         "watchlist_items": {"item_type", "value", "status", "decision_reason"},
         "follow_up_tasks": {"application_id", "task_type", "due_at"},
         "agent_runs": {"agent_name", "action", "status"},
-        "runtime_control": {"run_state", "run_once_requested", "last_successful_cycle_at"},
+        "runtime_control": {
+            "run_state",
+            "worker_state",
+            "run_once_requested",
+            "last_successful_cycle_at",
+            "last_heartbeat_at",
+            "sleep_until",
+            "status_message",
+        },
         "connector_health": {
             "connector_name",
             "status",

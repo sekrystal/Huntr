@@ -513,13 +513,20 @@ def render_agent_activity_tab() -> None:
     digest = autonomy.get("digest", {})
     summary = st.columns(6)
     summary[0].metric("Run state", runtime.get("run_state", "paused"))
-    summary[1].metric("Run once queued", "yes" if runtime.get("run_once_requested") else "no")
-    summary[2].metric("Last cycle start", format_timestamp(runtime.get("last_cycle_started_at")) or "never")
-    summary[3].metric("Last cycle success", format_timestamp(runtime.get("last_successful_cycle_at")) or "never")
-    summary[4].metric("Open investigations", health.get("open_investigations", 0))
-    summary[5].metric("Due follow-ups", health.get("due_follow_ups", 0))
+    summary[1].metric("Worker state", runtime.get("worker_state", health.get("worker_state", "idle")))
+    summary[2].metric("Run once queued", "yes" if runtime.get("run_once_requested") else "no")
+    summary[3].metric("Last cycle start", format_timestamp(runtime.get("last_cycle_started_at")) or "never")
+    summary[4].metric("Last cycle success", format_timestamp(runtime.get("last_successful_cycle_at")) or "never")
+    summary[5].metric("Heartbeat", format_timestamp(runtime.get("last_heartbeat_at")) or "never")
+    ops = st.columns(2)
+    ops[0].metric("Open investigations", health.get("open_investigations", 0))
+    ops[1].metric("Due follow-ups", health.get("due_follow_ups", 0))
     if health.get("last_failed_run_at"):
         st.caption(f"Last failed run: {format_timestamp(health.get('last_failed_run_at'))}")
+    if runtime.get("sleep_until"):
+        st.caption(f"Sleeping until: {format_timestamp(runtime.get('sleep_until'))}")
+    if runtime.get("status_message"):
+        st.caption(runtime["status_message"])
     if runtime.get("last_cycle_summary"):
         st.caption(runtime["last_cycle_summary"])
 

@@ -8,6 +8,8 @@ from sqlalchemy.orm import sessionmaker
 
 from core.config import Settings
 from core.models import Base, CandidateProfile, Lead, Listing
+from core.schemas import AgentRunResponse
+import scripts.run_worker as worker_script
 from services import ai_judges
 from services.runtime_control import determine_cycle_mode, get_runtime_control, set_runtime_action
 from services.sync import evaluate_critic_decision
@@ -153,6 +155,47 @@ def test_paused_worker_cycle_does_not_process_pipeline() -> None:
     outcome = run_worker_cycle(session, settings)
     assert outcome["state"] == "paused"
     assert outcome["ran"] is False
+    control = get_runtime_control(session, settings)
+    assert control.worker_state == "paused"
+    assert "paused" in (control.status_message or "").lower()
+
+
+def test_running_worker_cycle_updates_state_immediately(monkeypatch) -> None:
+    session = build_session()
+    seed_profile(session)
+    settings = Settings(database_url="sqlite:///:memory:", autonomy_enabled=True, greenhouse_enabled=True, demo_mode=False)
+    set_runtime_action(session, "play", settings)
+
+    monkeypatch.setattr("services.worker_runtime.get_runtime_connector_set", lambda settings: ("live", {"greenhouse"}, {"greenhouse"}))
+    monkeypatch.setattr(
+        "services.worker_runtime.run_full_pipeline",
+        lambda session, source_mode, enabled_connectors, strict_live_connectors: AgentRunResponse(agent="full_pipeline", summary="Completed one cycle."),
+    )
+
+    outcome = run_worker_cycle(session, settings)
+    control = get_runtime_control(session, settings)
+
+    assert outcome["ran"] is True
+    assert control.last_cycle_started_at is not None
+    assert control.last_successful_cycle_at is not None
+    assert control.worker_state == "idle"
+    assert "finished" in (control.status_message or "").lower()
+
+
+def test_worker_signal_marks_stopping_state(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(engine)
+    local_session = sessionmaker(bind=engine, expire_on_commit=False)
+    monkeypatch.setattr(worker_script, "SessionLocal", local_session)
+    worker_script.STOP_REQUESTED = False
+
+    worker_script._handle_signal(2, None)
+
+    with local_session() as session:
+        control = get_runtime_control(session)
+        assert worker_script.STOP_REQUESTED is True
+        assert control.worker_state == "stopping"
+        assert "shutdown signal" in (control.status_message or "").lower()
 
 
 def test_ai_judgment_cannot_override_deterministic_critic_suppression(monkeypatch) -> None:

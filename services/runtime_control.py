@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -25,9 +25,13 @@ def get_runtime_control(session: Session, settings: Settings | None = None) -> R
 def runtime_control_payload(control: RuntimeControl) -> RuntimeControlResponse:
     return RuntimeControlResponse(
         run_state=control.run_state,
+        worker_state=control.worker_state,
         run_once_requested=control.run_once_requested,
         last_cycle_started_at=control.last_cycle_started_at,
         last_successful_cycle_at=control.last_successful_cycle_at,
+        last_heartbeat_at=control.last_heartbeat_at,
+        sleep_until=control.sleep_until,
+        status_message=control.status_message,
         last_cycle_summary=control.last_cycle_summary,
     )
 
@@ -37,11 +41,15 @@ def set_runtime_action(session: Session, action: str, settings: Settings | None 
     if action == "play":
         control.run_state = "running"
         control.run_once_requested = False
+        control.status_message = "Worker will start the next cycle immediately."
     elif action == "pause":
         control.run_state = "paused"
         control.run_once_requested = False
+        control.status_message = "Pause requested. The worker will stop after the current bounded step."
     elif action == "run_once":
         control.run_once_requested = True
+        control.status_message = "Single cycle requested."
+    control.last_heartbeat_at = datetime.utcnow()
     session.flush()
     return control
 
@@ -59,11 +67,41 @@ def determine_cycle_mode(session: Session, settings: Settings) -> tuple[str, Run
 
 def mark_cycle_started(control: RuntimeControl) -> None:
     control.last_cycle_started_at = datetime.utcnow()
+    control.last_heartbeat_at = control.last_cycle_started_at
+    control.worker_state = "running_cycle"
+    control.sleep_until = None
+    control.status_message = "Worker is running a pipeline cycle."
 
 
 def mark_cycle_success(control: RuntimeControl, summary: str, consume_run_once: bool = True) -> None:
     control.last_successful_cycle_at = datetime.utcnow()
+    control.last_heartbeat_at = control.last_successful_cycle_at
+    control.worker_state = "idle"
+    control.sleep_until = None
+    control.status_message = "Worker finished the last cycle successfully."
     control.last_cycle_summary = summary
     if consume_run_once:
         control.run_once_requested = False
 
+
+def mark_worker_state(
+    control: RuntimeControl,
+    state: str,
+    message: str,
+    sleep_seconds: int | None = None,
+) -> None:
+    control.worker_state = state
+    control.last_heartbeat_at = datetime.utcnow()
+    control.status_message = message
+    control.sleep_until = (
+        control.last_heartbeat_at + timedelta(seconds=max(sleep_seconds, 0))
+        if sleep_seconds is not None
+        else None
+    )
+
+
+def mark_cycle_error(control: RuntimeControl, message: str) -> None:
+    control.worker_state = "error"
+    control.last_heartbeat_at = datetime.utcnow()
+    control.sleep_until = None
+    control.status_message = message

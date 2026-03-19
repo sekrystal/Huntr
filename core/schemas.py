@@ -216,16 +216,24 @@ class AutonomyHealthResponse(BaseModel):
     due_follow_ups: int = 0
     scheduler_enabled: bool = False
     runtime_state: str = "paused"
+    worker_state: str = "idle"
     run_once_requested: bool = False
     last_cycle_started_at: Optional[datetime] = None
     last_successful_cycle_at: Optional[datetime] = None
+    last_heartbeat_at: Optional[datetime] = None
+    sleep_until: Optional[datetime] = None
+    status_message: Optional[str] = None
 
 
 class RuntimeControlResponse(BaseModel):
     run_state: Literal["running", "paused"] = "paused"
+    worker_state: Literal["idle", "paused", "sleeping", "running_cycle", "stopping", "error"] = "idle"
     run_once_requested: bool = False
     last_cycle_started_at: Optional[datetime] = None
     last_successful_cycle_at: Optional[datetime] = None
+    last_heartbeat_at: Optional[datetime] = None
+    sleep_until: Optional[datetime] = None
+    status_message: Optional[str] = None
     last_cycle_summary: Optional[str] = None
 
 

@@ -37,9 +37,13 @@ def build_autonomy_health(session: Session, settings: Settings | None = None) ->
         due_follow_ups=due_follow_ups,
         scheduler_enabled=settings.enable_scheduler,
         runtime_state=runtime.run_state if runtime else ("running" if settings.autonomy_enabled else "paused"),
+        worker_state=runtime.worker_state if runtime else "idle",
         run_once_requested=runtime.run_once_requested if runtime else False,
         last_cycle_started_at=runtime.last_cycle_started_at if runtime else None,
         last_successful_cycle_at=runtime.last_successful_cycle_at if runtime else None,
+        last_heartbeat_at=runtime.last_heartbeat_at if runtime else None,
+        sleep_until=runtime.sleep_until if runtime else None,
+        status_message=runtime.status_message if runtime else None,
     )
 
 
