@@ -1,0 +1,12 @@
+fastapi==0.115.12
+uvicorn==0.34.0
+streamlit==1.44.1
+sqlalchemy==2.0.40
+pydantic==2.11.1
+pydantic-settings==2.8.1
+requests==2.32.3
+urllib3<2
+python-dotenv==1.0.1
+pytest==8.3.5
+pypdf==5.3.1
+psycopg[binary]==3.2.6

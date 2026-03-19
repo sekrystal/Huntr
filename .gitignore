@@ -1,0 +1,31 @@
+.DS_Store
+
+# Local environment files
+.env
+
+# Virtual environments
+.venv/
+.venv_validation/
+.venv*/
+
+# Python caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Local runtime data
+opportunity_scout.db
+*.sqlite
+*.sqlite3
+
+# Logs and temp artifacts
+*.log
+*.pid
+*.tar
+*.tar.gz
+*.tgz
+
+# Streamlit and coverage artifacts
+.streamlit/
+.coverage
+htmlcov/

@@ -1,0 +1,18 @@
+[Unit]
+Description=Opportunity Scout Worker
+After=network.target postgresql.service opportunity-scout-api.service
+Wants=postgresql.service opportunity-scout-api.service
+
+[Service]
+Type=simple
+User=oppscout
+Group=oppscout
+WorkingDirectory=/opt/opportunity-scout
+EnvironmentFile=/etc/opportunity-scout/opportunity-scout.env
+ExecStart=/opt/opportunity-scout/.venv/bin/python scripts/run_worker.py
+Restart=always
+RestartSec=10
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,18 @@
+[Unit]
+Description=Opportunity Scout API
+After=network.target postgresql.service
+Wants=postgresql.service
+
+[Service]
+Type=simple
+User=oppscout
+Group=oppscout
+WorkingDirectory=/opt/opportunity-scout
+EnvironmentFile=/etc/opportunity-scout/opportunity-scout.env
+ExecStart=/opt/opportunity-scout/.venv/bin/uvicorn api.main:app --host 127.0.0.1 --port 8000
+Restart=always
+RestartSec=5
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target

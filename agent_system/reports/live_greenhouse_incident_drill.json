@@ -1,0 +1,45 @@
+{
+  "failure_phase": [
+    {
+      "cycle": 1,
+      "status": "failed",
+      "circuit_state": "closed",
+      "consecutive_failures": 1,
+      "last_failure_classification": "source_unavailable"
+    },
+    {
+      "cycle": 2,
+      "status": "failed",
+      "circuit_state": "closed",
+      "consecutive_failures": 2,
+      "last_failure_classification": "source_unavailable"
+    },
+    {
+      "cycle": 3,
+      "status": "circuit_open",
+      "circuit_state": "open",
+      "consecutive_failures": 3,
+      "last_failure_classification": "source_unavailable"
+    }
+  ],
+  "recovery_phase": [
+    {
+      "cycle": 1,
+      "status": "recovering",
+      "circuit_state": "closed",
+      "consecutive_failures": 0,
+      "recent_successes": 1,
+      "trust_score": 0.55,
+      "approved_for_unattended": false
+    },
+    {
+      "cycle": 2,
+      "status": "healthy",
+      "circuit_state": "closed",
+      "consecutive_failures": 0,
+      "recent_successes": 2,
+      "trust_score": 0.8,
+      "approved_for_unattended": true
+    }
+  ]
+}

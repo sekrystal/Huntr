@@ -1,0 +1,187 @@
+{
+  "mode": "live",
+  "connector_family": "greenhouse",
+  "actual_duration_seconds": 9.26,
+  "cycles_requested": 3,
+  "pipeline_runs": 3,
+  "successful_runs": 3,
+  "total_failures": 0,
+  "failed_runs": [],
+  "health_transitions": [],
+  "duplicate_lead_keys": [],
+  "visible_stale_rows": [],
+  "open_investigations": 0,
+  "watchlist_count": 0,
+  "follow_up_count": 0,
+  "quarantined_rows": 0,
+  "circuit_breaker_events": 0,
+  "recoveries": 0,
+  "activity_count": 10,
+  "anomalies": [],
+  "cycle_summaries": [
+    {
+      "cycle": 1,
+      "run_at": "2026-03-18T22:04:20.690351+00:00",
+      "summary": "Scout added 575 listings and 0 signals from live source data. New rows: Airtable / Web Developer, Airtable / Technical Account Manager, Airtable / Strategic Finance Analyst, Airtable / Strategic Account Executive, Higher Education. | Resolver linked 0 additional signals. Combined leads: none. 0 signals still need recheck. | Fit reviewed 575 leads and flagged 57 as clearly mismatched. Examples: Stripe / Administrative Coordinator, Stripe / Android Engineer, Terminal, Stripe / Backend/API Engineer, Money as a Service. | Ranker reprioritized the lead set. Top visible rows: Airtable / Software Engineer, Airtable / Senior Manager, Demand Gen Content, Airtable / Program Manager, AI Programs. | Critic kept 72 leads visible and suppressed 503 leads. Suppressed: Stripe / Account Executive, AI Sales, Stripe / Account Executive, AI Sales, Stripe / Account Executive, Bridge, Stripe / Account Executive, CEE - Existing Business. | Tracker reviewed applications and created 0 follow-up tasks. | Learning proposed 0 watchlist expansions from visible leads. | Governance promoted 0 items, suppressed or rolled back 0 items, and expired 0 items.",
+      "digest": {
+        "run_at": "2026-03-18 22:04:20.680253",
+        "summary": "Scout added 575 listings and 0 signals from live source data. New rows: Airtable / Web Developer, Airtable / Technical Account Manager, Airtable / Strategic Finance Analyst, Airtable / Strategic Account Executive, Higher Education. | Resolver linked 0 additional signals. Combined leads: none. 0 signals still need recheck. | Fit reviewed 575 leads and flagged 57 as clearly mismatched. Examples: Stripe / Administrative Coordinator, Stripe / Android Engineer, Terminal, Stripe / Backend/API Engineer, Money as a Service. | Ranker reprioritized the lead set. Top visible rows: Airtable / Software Engineer, Airtable / Senior Manager, Demand Gen Content, Airtable / Program Manager, AI Programs. | Critic kept 72 leads visible and suppressed 503 leads. Suppressed: Stripe / Account Executive, AI Sales, Stripe / Account Executive, AI Sales, Stripe / Account Executive, Bridge, Stripe / Account Executive, CEE - Existing Business. | Tracker reviewed applications and created 0 follow-up tasks. | Learning proposed 0 watchlist expansions from visible leads. | Governance promoted 0 items, suppressed or rolled back 0 items, and expired 0 items.",
+        "new_leads": [
+          "Stripe / Account Executive, AI Sales",
+          "Stripe / Account Executive, Bridge",
+          "Stripe / Account Executive, CEE - Existing Business",
+          "Stripe / Account Executive, Enterprise - Billing (Existing Business)",
+          "Stripe / Account Executive, Enterprise (Existing Business)",
+          "Stripe / Account Executive - Enterprise Germany",
+          "Stripe / Account Executive, Enterprise (Hunter)"
+        ],
+        "suppressed_leads": [
+          "Stripe / Crypto Product Accountant",
+          "Stripe / Tech Operations Manager",
+          "Stripe / Sales Development Representative, Greater China",
+          "Stripe / Account Executive (Hunter) , UK Enterprise Retail",
+          "Airtable / Strategic Account Executive, Higher Education",
+          "Stripe / Infrastructure Engineer, Privy",
+          "Stripe / Operations Associate, Financial Crimes Bridge KYB",
+          "Stripe / Backend Engineer, UI Services"
+        ],
+        "investigations_changed": 0,
+        "follow_ups_created": [],
+        "watchlist_changes": [],
+        "failures": []
+      },
+      "connector_health": [
+        {
+          "connector_name": "greenhouse",
+          "status": "healthy",
+          "consecutive_failures": 0,
+          "recent_successes": 1,
+          "recent_failures": 0,
+          "trust_score": 0.84,
+          "circuit_state": "closed",
+          "disabled_until": null,
+          "last_success_at": "2026-03-18 22:04:19.491702",
+          "last_failure_at": null,
+          "last_error": null,
+          "last_failure_classification": null,
+          "last_mode": "live",
+          "last_item_count": 575,
+          "quarantine_count": 0,
+          "approved_for_unattended": true,
+          "last_freshness_lag_seconds": 76648
+        }
+      ]
+    },
+    {
+      "cycle": 2,
+      "run_at": "2026-03-18T22:04:24.269544+00:00",
+      "summary": "Scout added 575 listings and 0 signals from live source data. New rows: none. | Resolver linked 0 additional signals. Combined leads: none. 0 signals still need recheck. | Fit reviewed 575 leads and flagged 57 as clearly mismatched. Examples: Stripe / Administrative Coordinator, Stripe / Android Engineer, Terminal, Stripe / Backend/API Engineer, Money as a Service. | Ranker reprioritized the lead set. Top visible rows: Airtable / Software Engineer, Airtable / Senior Manager, Demand Gen Content, Airtable / Program Manager, AI Programs. | Critic kept 72 leads visible and suppressed 503 leads. Suppressed: Stripe / Account Executive, AI Sales, Stripe / Account Executive, AI Sales, Stripe / Account Executive, Bridge, Stripe / Account Executive, CEE - Existing Business. | Tracker reviewed applications and created 0 follow-up tasks. | Learning proposed 0 watchlist expansions from visible leads. | Governance promoted 0 items, suppressed or rolled back 0 items, and expired 0 items.",
+      "digest": {
+        "run_at": "2026-03-18 22:04:24.262679",
+        "summary": "No material changes in this cycle.",
+        "new_leads": [],
+        "suppressed_leads": [],
+        "investigations_changed": 0,
+        "follow_ups_created": [],
+        "watchlist_changes": [],
+        "failures": []
+      },
+      "connector_health": [
+        {
+          "connector_name": "greenhouse",
+          "status": "healthy",
+          "consecutive_failures": 0,
+          "recent_successes": 2,
+          "recent_failures": 0,
+          "trust_score": 0.88,
+          "circuit_state": "closed",
+          "disabled_until": null,
+          "last_success_at": "2026-03-18 22:04:23.312294",
+          "last_failure_at": null,
+          "last_error": null,
+          "last_failure_classification": null,
+          "last_mode": "live",
+          "last_item_count": 575,
+          "quarantine_count": 0,
+          "approved_for_unattended": true,
+          "last_freshness_lag_seconds": 76652
+        }
+      ]
+    },
+    {
+      "cycle": 3,
+      "run_at": "2026-03-18T22:04:27.817057+00:00",
+      "summary": "Scout added 575 listings and 0 signals from live source data. New rows: none. | Resolver linked 0 additional signals. Combined leads: none. 0 signals still need recheck. | Fit reviewed 575 leads and flagged 57 as clearly mismatched. Examples: Stripe / Administrative Coordinator, Stripe / Android Engineer, Terminal, Stripe / Backend/API Engineer, Money as a Service. | Ranker reprioritized the lead set. Top visible rows: Airtable / Software Engineer, Airtable / Senior Manager, Demand Gen Content, Airtable / Program Manager, AI Programs. | Critic kept 72 leads visible and suppressed 503 leads. Suppressed: Stripe / Account Executive, AI Sales, Stripe / Account Executive, AI Sales, Stripe / Account Executive, Bridge, Stripe / Account Executive, CEE - Existing Business. | Tracker reviewed applications and created 0 follow-up tasks. | Learning proposed 0 watchlist expansions from visible leads. | Governance promoted 0 items, suppressed or rolled back 0 items, and expired 0 items.",
+      "digest": {
+        "run_at": "2026-03-18 22:04:27.809640",
+        "summary": "No material changes in this cycle.",
+        "new_leads": [],
+        "suppressed_leads": [],
+        "investigations_changed": 0,
+        "follow_ups_created": [],
+        "watchlist_changes": [],
+        "failures": []
+      },
+      "connector_health": [
+        {
+          "connector_name": "greenhouse",
+          "status": "healthy",
+          "consecutive_failures": 0,
+          "recent_successes": 3,
+          "recent_failures": 0,
+          "trust_score": 0.92,
+          "circuit_state": "closed",
+          "disabled_until": null,
+          "last_success_at": "2026-03-18 22:04:26.837282",
+          "last_failure_at": null,
+          "last_error": null,
+          "last_failure_classification": null,
+          "last_mode": "live",
+          "last_item_count": 575,
+          "quarantine_count": 0,
+          "approved_for_unattended": true,
+          "last_freshness_lag_seconds": 76655
+        }
+      ]
+    }
+  ],
+  "latest_digest": {
+    "run_at": "2026-03-18 22:04:27.809640",
+    "summary": "No material changes in this cycle.",
+    "new_leads": [],
+    "suppressed_leads": [],
+    "investigations_changed": 0,
+    "follow_ups_created": [],
+    "watchlist_changes": [],
+    "failures": []
+  },
+  "latest_health": {
+    "last_successful_run_at": "2026-03-18 22:04:27.809181",
+    "last_failed_run_at": null,
+    "open_investigations": 0,
+    "suppressed_leads": 503,
+    "due_follow_ups": 0,
+    "scheduler_enabled": false
+  },
+  "connector_health": [
+    {
+      "connector_name": "greenhouse",
+      "status": "healthy",
+      "consecutive_failures": 0,
+      "recent_successes": 3,
+      "recent_failures": 0,
+      "trust_score": 0.92,
+      "circuit_state": "closed",
+      "disabled_until": null,
+      "last_success_at": "2026-03-18 22:04:26.837282",
+      "last_failure_at": null,
+      "last_error": null,
+      "last_failure_classification": null,
+      "last_mode": "live",
+      "last_item_count": 575,
+      "quarantine_count": 0,
+      "approved_for_unattended": true,
+      "last_freshness_lag_seconds": 76655
+    }
+  ]
+}
