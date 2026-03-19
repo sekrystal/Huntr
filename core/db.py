@@ -40,7 +40,10 @@ def init_db() -> None:
             "last_successful_cycle_at",
             "last_heartbeat_at",
             "sleep_until",
+            "current_interval_seconds",
             "status_message",
+            "last_control_action",
+            "last_control_at",
         },
         "connector_health": {
             "connector_name",

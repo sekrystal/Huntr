@@ -521,10 +521,22 @@ def render_agent_activity_tab() -> None:
     ops = st.columns(2)
     ops[0].metric("Open investigations", health.get("open_investigations", 0))
     ops[1].metric("Due follow-ups", health.get("due_follow_ups", 0))
+    interval_cols = st.columns(3)
+    interval_cols[0].metric("Next cycle", format_timestamp(runtime.get("next_cycle_at")) or "pending")
+    interval_cols[1].metric("Current interval", f"{runtime.get('current_interval_seconds', 0)}s")
+    interval_cols[2].metric("Last control", runtime.get("last_control_action") or "none")
     if health.get("last_failed_run_at"):
         st.caption(f"Last failed run: {format_timestamp(health.get('last_failed_run_at'))}")
-    if runtime.get("sleep_until"):
-        st.caption(f"Sleeping until: {format_timestamp(runtime.get('sleep_until'))}")
+    if runtime.get("last_control_at"):
+        st.caption(f"Last control change: {format_timestamp(runtime.get('last_control_at'))}")
+    if runtime.get("worker_state") == "sleeping":
+        st.caption(f"Worker is healthy and sleeping until the next cycle at {format_timestamp(runtime.get('next_cycle_at'))}.")
+    elif runtime.get("worker_state") == "paused":
+        st.caption("Worker is paused and will not start another cycle until you press Play or Run once.")
+    elif runtime.get("worker_state") == "running_cycle":
+        st.caption("Worker is actively running a cycle now.")
+    elif runtime.get("worker_state") == "stopping":
+        st.caption("Worker is shutting down cleanly.")
     if runtime.get("status_message"):
         st.caption(runtime["status_message"])
     if runtime.get("last_cycle_summary"):

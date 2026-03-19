@@ -8,10 +8,10 @@ from sqlalchemy.orm import sessionmaker
 
 from core.config import Settings
 from core.models import Base, CandidateProfile, Lead, Listing
-from core.schemas import AgentRunResponse
+from core.schemas import AgentRunResponse, RuntimeControlRequest
 import scripts.run_worker as worker_script
 from services import ai_judges
-from services.runtime_control import determine_cycle_mode, get_runtime_control, set_runtime_action
+from services.runtime_control import determine_cycle_mode, effective_worker_interval_seconds, get_runtime_control, runtime_control_payload, set_runtime_action
 from services.sync import evaluate_critic_decision
 from services.worker_runtime import run_worker_cycle
 
@@ -146,6 +146,42 @@ def test_runtime_control_supports_play_pause_and_run_once() -> None:
     mode, control = determine_cycle_mode(session, settings)
     assert mode == "run_once"
     assert control.run_once_requested is True
+
+
+def test_runtime_control_request_accepts_direct_run_state() -> None:
+    payload = RuntimeControlRequest(run_state="running")
+    assert payload.run_state == "running"
+    assert payload.action is None
+
+
+def test_runtime_control_payload_exposes_interval_and_next_cycle() -> None:
+    session = build_session()
+    settings = Settings(database_url="sqlite:///:memory:", autonomy_enabled=True, demo_mode=True, worker_interval_seconds=900, interactive_worker_interval_seconds=15)
+    control = get_runtime_control(session, settings)
+    set_runtime_action(session, "play", settings)
+    control.sleep_until = datetime.utcnow()
+    payload = runtime_control_payload(control, settings)
+    assert payload.current_interval_seconds == 15
+    assert payload.next_cycle_at is not None
+    assert payload.last_control_action == "play"
+
+
+def test_mark_worker_state_persists_actual_interval() -> None:
+    session = build_session()
+    settings = Settings(database_url="sqlite:///:memory:", autonomy_enabled=True, demo_mode=True)
+    control = get_runtime_control(session, settings)
+    from services.runtime_control import mark_worker_state
+
+    mark_worker_state(control, "sleeping", "Sleeping", sleep_seconds=9)
+    payload = runtime_control_payload(control, settings)
+    assert payload.current_interval_seconds == 9
+
+
+def test_effective_worker_interval_is_shorter_in_demo_mode() -> None:
+    demo_settings = Settings(database_url="sqlite:///:memory:", demo_mode=True, worker_interval_seconds=900, interactive_worker_interval_seconds=12)
+    live_settings = Settings(database_url="sqlite:///:memory:", demo_mode=False, worker_interval_seconds=900, interactive_worker_interval_seconds=12)
+    assert effective_worker_interval_seconds(demo_settings) == 12
+    assert effective_worker_interval_seconds(live_settings) == 900
 
 
 def test_paused_worker_cycle_does_not_process_pipeline() -> None:

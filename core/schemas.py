@@ -4,6 +4,7 @@ from datetime import datetime
 from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
+from pydantic import model_validator
 
 
 FeedbackAction = Literal[
@@ -222,7 +223,11 @@ class AutonomyHealthResponse(BaseModel):
     last_successful_cycle_at: Optional[datetime] = None
     last_heartbeat_at: Optional[datetime] = None
     sleep_until: Optional[datetime] = None
+    next_cycle_at: Optional[datetime] = None
+    current_interval_seconds: int = 0
     status_message: Optional[str] = None
+    last_control_action: Optional[str] = None
+    last_control_at: Optional[datetime] = None
 
 
 class RuntimeControlResponse(BaseModel):
@@ -233,12 +238,23 @@ class RuntimeControlResponse(BaseModel):
     last_successful_cycle_at: Optional[datetime] = None
     last_heartbeat_at: Optional[datetime] = None
     sleep_until: Optional[datetime] = None
+    next_cycle_at: Optional[datetime] = None
+    current_interval_seconds: int = 0
     status_message: Optional[str] = None
+    last_control_action: Optional[str] = None
+    last_control_at: Optional[datetime] = None
     last_cycle_summary: Optional[str] = None
 
 
 class RuntimeControlRequest(BaseModel):
-    action: Literal["play", "pause", "run_once"]
+    action: Optional[Literal["play", "pause", "run_once"]] = None
+    run_state: Optional[Literal["running", "paused"]] = None
+
+    @model_validator(mode="after")
+    def validate_payload(self):
+        if self.action is None and self.run_state is None:
+            raise ValueError("Provide either action or run_state.")
+        return self
 
 
 class AutonomyDigestResponse(BaseModel):

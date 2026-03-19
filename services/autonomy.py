@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from core.config import Settings, get_settings
 from core.models import AgentRun, ConnectorHealth, DailyDigest, FollowUpTask, Investigation, Lead, RunDigest, RuntimeControl
 from core.schemas import AutonomyDigestResponse, AutonomyHealthResponse, ConnectorHealthResponse, DailyDigestResponse
+from services.runtime_control import effective_worker_interval_seconds
 
 
 def build_autonomy_health(session: Session, settings: Settings | None = None) -> AutonomyHealthResponse:
@@ -43,7 +44,11 @@ def build_autonomy_health(session: Session, settings: Settings | None = None) ->
         last_successful_cycle_at=runtime.last_successful_cycle_at if runtime else None,
         last_heartbeat_at=runtime.last_heartbeat_at if runtime else None,
         sleep_until=runtime.sleep_until if runtime else None,
+        next_cycle_at=runtime.sleep_until if runtime else None,
+        current_interval_seconds=effective_worker_interval_seconds(settings),
         status_message=runtime.status_message if runtime else None,
+        last_control_action=runtime.last_control_action if runtime else None,
+        last_control_at=runtime.last_control_at if runtime else None,
     )
 
 

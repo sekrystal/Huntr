@@ -15,7 +15,7 @@ from core.db import SessionLocal, init_db
 from core.logging import configure_logging, get_logger
 from services.activity import log_agent_failure
 from services.alerts import evaluate_alerts
-from services.runtime_control import get_runtime_control, mark_worker_state, mark_cycle_error
+from services.runtime_control import effective_worker_interval_seconds, get_runtime_control, mark_worker_state, mark_cycle_error
 from services.worker_runtime import run_worker_cycle
 
 
@@ -58,13 +58,19 @@ def _runtime_change_detected(expected_run_state: str) -> bool:
         return False
 
 
-def _sleep_interruptibly(total_seconds: int, expected_run_state: str, poll_seconds: float = 1.0) -> None:
+def _sleep_interruptibly(
+    total_seconds: int,
+    expected_run_state: str,
+    state_label: str,
+    status_message: str,
+    poll_seconds: float = 1.0,
+) -> None:
     deadline = time.time() + max(total_seconds, 0)
     while not STOP_REQUESTED and time.time() < deadline:
         if _runtime_change_detected(expected_run_state):
             return
         remaining = max(deadline - time.time(), 0.0)
-        _persist_worker_state("sleeping", f"Worker sleeping for {round(remaining, 1)} more seconds before the next check.", sleep_seconds=int(remaining))
+        _persist_worker_state(state_label, status_message.format(seconds=round(remaining, 1)), sleep_seconds=int(remaining))
         time.sleep(min(poll_seconds, remaining))
 
 
@@ -96,11 +102,24 @@ def run_worker_loop() -> None:
 
         if STOP_REQUESTED:
             break
-        sleep_seconds = settings.worker_interval_seconds
+        sleep_seconds = effective_worker_interval_seconds(settings)
         if outcome.get("state") in {"paused", "disabled", "no_connectors"}:
-            sleep_seconds = min(settings.worker_interval_seconds, 1)
+            sleep_seconds = 1
         expected_run_state = "paused" if outcome.get("state") == "paused" else "running"
-        _sleep_interruptibly(sleep_seconds, expected_run_state=expected_run_state)
+        state_label = "sleeping"
+        status_message = "Worker sleeping for {seconds} more seconds before the next cycle."
+        if outcome.get("state") == "paused":
+            state_label = "paused"
+            status_message = "Worker is paused and polling for control changes. Next check in {seconds} seconds."
+        elif outcome.get("state") in {"disabled", "no_connectors"}:
+            state_label = "idle"
+            status_message = "Worker is idle and polling for control changes. Next check in {seconds} seconds."
+        _sleep_interruptibly(
+            sleep_seconds,
+            expected_run_state=expected_run_state,
+            state_label=state_label,
+            status_message=status_message,
+        )
 
     _persist_worker_state("stopping", "Worker has stopped.")
 

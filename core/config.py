@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     greenhouse_enabled: bool = True
     sync_interval_seconds: int = 900
     worker_interval_seconds: int = 900
+    interactive_worker_interval_seconds: int = 15
     enable_scheduler: bool = False
     scheduler_initial_delay_seconds: Optional[int] = None
     scheduler_max_cycles: int = 0

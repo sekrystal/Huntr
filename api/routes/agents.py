@@ -68,7 +68,10 @@ def get_runtime_control_state(db: Session = Depends(get_db)) -> RuntimeControlRe
 
 @router.post("/runtime-control", response_model=RuntimeControlResponse)
 def set_runtime_control_state(payload: RuntimeControlRequest, db: Session = Depends(get_db)) -> RuntimeControlResponse:
-    control = set_runtime_action(db, payload.action)
+    action = payload.action
+    if action is None and payload.run_state is not None:
+        action = "play" if payload.run_state == "running" else "pause"
+    control = set_runtime_action(db, action)
     db.commit()
     return runtime_control_payload(control)
 
