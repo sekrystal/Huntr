@@ -6,8 +6,10 @@ import logging
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+from core.config import Settings
 from core.models import AgentRun, Base, CandidateProfile, Lead, Listing
 from services.pipeline import run_critic_agent
+from services import sync as sync_service
 from services.sync import list_leads
 
 
@@ -521,6 +523,125 @@ def test_list_leads_location_cache_and_deduped_location_logs(caplog) -> None:
     deduped_message = next(message for message in messages if "[LOCATION_GATE_DEDUPED]" in message)
     assert "'emitted_count': 1" in deduped_message
     assert "'suppressed_duplicate_count': 1" in deduped_message
+
+
+def test_list_leads_does_not_invoke_ai_critic_when_readtime_ai_disabled(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(engine)
+    session = sessionmaker(bind=engine, expire_on_commit=False)()
+    _seed_profile(session)
+
+    listing = Listing(
+        company_name="NoAI Co",
+        title="Operations Lead",
+        location="Remote, US",
+        url="https://job-boards.greenhouse.io/noai/jobs/1",
+        source_type="greenhouse",
+        posted_at=datetime.utcnow(),
+        first_published_at=datetime.utcnow(),
+        last_seen_at=datetime.utcnow(),
+        description_text="Own planning and cadence.",
+        listing_status="active",
+        freshness_hours=1.0,
+        freshness_days=0,
+        metadata_json={},
+    )
+    session.add(listing)
+    session.flush()
+    session.add(
+        Lead(
+            lead_type="listing",
+            company_name="NoAI Co",
+            primary_title="Operations Lead",
+            listing_id=listing.id,
+            surfaced_at=datetime.utcnow(),
+            rank_label="strong",
+            confidence_label="high",
+            freshness_label="fresh",
+            title_fit_label="core match",
+            qualification_fit_label="strong fit",
+            explanation="Visible listing",
+            score_breakdown_json={"composite": 6.5},
+            evidence_json={"url": listing.url, "source_type": "greenhouse"},
+            hidden=False,
+        )
+    )
+    session.commit()
+
+    monkeypatch.setattr(sync_service, "get_settings", lambda: Settings(enable_ai_readtime_critic=False))
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("judge_critic_with_ai should not be called during read path when disabled")
+
+    monkeypatch.setattr(sync_service, "judge_critic_with_ai", fail_if_called)
+
+    items = list_leads(session)
+
+    assert len(items) == 1
+
+
+def test_list_leads_reuses_persisted_ai_critic_without_fresh_call(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(engine)
+    session = sessionmaker(bind=engine, expire_on_commit=False)()
+    _seed_profile(session)
+
+    listing = Listing(
+        company_name="PersistedAI Co",
+        title="Chief of Staff",
+        location="Remote, US",
+        url="https://job-boards.greenhouse.io/persisted/jobs/1",
+        source_type="greenhouse",
+        posted_at=datetime.utcnow(),
+        first_published_at=datetime.utcnow(),
+        last_seen_at=datetime.utcnow(),
+        description_text="Founder partner role.",
+        listing_status="active",
+        freshness_hours=1.0,
+        freshness_days=0,
+        metadata_json={},
+    )
+    session.add(listing)
+    session.flush()
+    session.add(
+        Lead(
+            lead_type="listing",
+            company_name="PersistedAI Co",
+            primary_title="Chief of Staff",
+            listing_id=listing.id,
+            surfaced_at=datetime.utcnow(),
+            rank_label="strong",
+            confidence_label="high",
+            freshness_label="fresh",
+            title_fit_label="core match",
+            qualification_fit_label="strong fit",
+            explanation="Visible listing",
+            score_breakdown_json={"composite": 7.0},
+            evidence_json={
+                "url": listing.url,
+                "source_type": "greenhouse",
+                "ai_critic_assessment": {
+                    "quality_assessment": "uncertain",
+                    "reasons": ["persisted warning"],
+                },
+            },
+            hidden=False,
+        )
+    )
+    session.commit()
+
+    monkeypatch.setattr(sync_service, "get_settings", lambda: Settings(enable_ai_readtime_critic=False))
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("judge_critic_with_ai should not be called when persisted assessment exists")
+
+    monkeypatch.setattr(sync_service, "judge_critic_with_ai", fail_if_called)
+
+    items = list_leads(session, include_hidden=True)
+
+    assert len(items) == 1
+    assert items[0].hidden is True
+    assert items[0].evidence_json["critic_status"] == "uncertain"
 
 
 def test_default_leads_query_returns_timestamp_precision_and_recently_seen_rows_only() -> None:

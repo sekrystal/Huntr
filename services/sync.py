@@ -254,7 +254,10 @@ def evaluate_critic_decision(
     listing_cache: Optional[dict[int, Listing]] = None,
     location_policy_evaluator=None,
     location_log_state: Optional[dict] = None,
+    settings=None,
+    ai_critic_runtime_state: Optional[dict] = None,
 ) -> dict:
+    settings = settings or get_settings()
     duplicate_losers = duplicate_losers or {}
     context = _authoritative_listing_context(session, lead, listing_cache=listing_cache)
     url = context["url"]
@@ -270,12 +273,14 @@ def evaluate_critic_decision(
     location_policy = (
         location_policy_evaluator(lead, location)
         if location_policy_evaluator
-        else is_location_allowed_for_profile(profile, location, settings=get_settings())
+        else is_location_allowed_for_profile(profile, location, settings=settings)
     )
     reasons: list[str] = []
     status = "visible"
     suppression_category = "none"
-    ai_critic = None
+    persisted_ai_critic = dict((lead.evidence_json or {}).get("ai_critic_assessment") or {}) or None
+    ai_critic = persisted_ai_critic
+    used_live_ai_call = False
 
     if lead.id in duplicate_losers:
         reasons.append(duplicate_losers[lead.id])
@@ -367,14 +372,33 @@ def evaluate_critic_decision(
             reasons.append("Confidence is too low for default surfaced listings")
             status = "uncertain"
             suppression_category = "uncertain"
-        ai_critic = judge_critic_with_ai(
-            title=lead.primary_title,
-            company_name=lead.company_name,
-            description_text=description_text,
-            listing_status=listing_status,
-            freshness_days=freshness_days,
-            page_text=page_text,
-            url=url,
+        if (
+            settings.enable_ai_readtime_critic
+            and ai_critic is None
+            and ai_critic_runtime_state is not None
+            and ai_critic_runtime_state.get("remaining", 0) > 0
+        ):
+            ai_critic_runtime_state["remaining"] -= 1
+            ai_critic = judge_critic_with_ai(
+                title=lead.primary_title,
+                company_name=lead.company_name,
+                description_text=description_text,
+                listing_status=listing_status,
+                freshness_days=freshness_days,
+                page_text=page_text,
+                url=url,
+            )
+            used_live_ai_call = True
+        logger.info(
+            "[READTIME_AI_CRITIC] %s",
+            {
+                "enabled": settings.enable_ai_readtime_critic,
+                "used_persisted_assessment": persisted_ai_critic is not None,
+                "lead_id": lead.id,
+                "company": lead.company_name,
+                "title": lead.primary_title,
+                "used_live_call": used_live_ai_call,
+            },
         )
         if ai_critic and status == "visible" and ai_critic.get("quality_assessment") in {"uncertain", "stale", "suppress"}:
             reasons.append(f"AI critic flagged: {'; '.join(ai_critic.get('reasons', []))}")
@@ -1643,6 +1667,7 @@ def list_leads(
     include_signal_only: bool = False,
 ) -> list[LeadResponse]:
     started_at = perf_counter()
+    settings = get_settings()
     rank_order = {"strong": 0, "medium": 1, "weak": 2}
     freshness_order = {"fresh": 0, "recent": 1, "stale": 2, "unknown": 3}
     lead_type_order = {"combined": 0, "listing": 1, "signal": 2}
@@ -1760,9 +1785,10 @@ def list_leads(
                 location_gate_stats["cache_hits"] += 1
                 return location_cache[cache_key]
             location_gate_stats["cache_misses"] += 1
-            location_cache[cache_key] = is_location_allowed_for_profile(profile, location, settings=get_settings())
+            location_cache[cache_key] = is_location_allowed_for_profile(profile, location, settings=settings)
             return location_cache[cache_key]
 
+        ai_critic_runtime_state = {"remaining": 5 if settings.enable_ai_readtime_critic else 0}
         critic_stage_started_at = perf_counter()
         for lead in candidate_records:
             total_considered += 1
@@ -1777,6 +1803,8 @@ def list_leads(
                 listing_cache=listing_cache,
                 location_policy_evaluator=_evaluate_location_policy,
                 location_log_state=location_log_state,
+                settings=settings,
+                ai_critic_runtime_state=ai_critic_runtime_state,
             )
             authoritative_listing = decision.get("listing")
             freshness_days = decision["freshness_days"]

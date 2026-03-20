@@ -50,6 +50,7 @@ class Settings(BaseSettings):
     openai_model: str = "gpt-5-mini"
     openai_timeout_seconds: int = 20
     openai_max_retries: int = 2
+    enable_ai_readtime_critic: bool = False
     x_bearer_token: Optional[str] = None
     greenhouse_board_tokens: str = ""
     ashby_org_keys: str = ""
