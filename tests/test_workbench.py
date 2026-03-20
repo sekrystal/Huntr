@@ -3,7 +3,9 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 import pandas as pd
+import requests
 
+from ui import app as ui_app
 from ui.app import filter_and_sort_table
 
 
@@ -99,3 +101,21 @@ def test_filter_and_sort_table_sorts_by_freshness_and_date() -> None:
     )
 
     assert filtered["company"].tolist() == ["FreshCo", "RecentCo"]
+
+
+def test_fetch_json_returns_empty_leads_payload_on_request_failure(monkeypatch) -> None:
+    captured: list[str] = []
+
+    def fake_request(*args, **kwargs):
+        raise requests.exceptions.ReadTimeout("timeout")
+
+    def fake_error(message: str) -> None:
+        captured.append(message)
+
+    monkeypatch.setattr(ui_app.requests, "request", fake_request)
+    monkeypatch.setattr(ui_app.st, "error", fake_error)
+
+    payload = ui_app.fetch_json("/leads?freshness_window_days=14")
+
+    assert payload == {"items": []}
+    assert captured

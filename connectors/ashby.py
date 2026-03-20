@@ -79,20 +79,38 @@ class AshbyConnector:
 
     def _fetch_live(self, orgs: list[str]) -> list[dict]:
         jobs: list[dict] = []
+        per_org_counts: dict[str, int] = {}
+        empty_orgs: list[str] = []
         for org in orgs:
+            normalized_org = _normalize_ashby_org_key(org)
+            logger.info("[ASHBY_FETCH_REQUEST] %s", {"requested_org": org, "normalized_org": normalized_org})
             response = requests.post(
                 "https://jobs.ashbyhq.com/api/non-user-graphql",
                 json={
                     "operationName": "ApiJobBoardWithTeams",
-                    "variables": {"organizationHostedJobsPageName": org},
+                    "variables": {"organizationHostedJobsPageName": normalized_org},
                     "query": "query ApiJobBoardWithTeams($organizationHostedJobsPageName: String!) { jobBoard: jobBoardWithTeams(organizationHostedJobsPageName: $organizationHostedJobsPageName) { jobs { id title jobUrl publishedDate descriptionPlain location { location } } } }",
                 },
                 timeout=15,
             )
             response.raise_for_status()
             payload = response.json()
-            for job in payload.get("data", {}).get("jobBoard", {}).get("jobs", []):
-                job["companyName"] = org.replace("-", " ").title()
-                job["source_org_key"] = org
+            org_jobs = payload.get("data", {}).get("jobBoard", {}).get("jobs", []) or []
+            per_org_counts[normalized_org] = len(org_jobs)
+            if not org_jobs:
+                empty_orgs.append(normalized_org)
+            for job in org_jobs:
+                job["companyName"] = normalized_org.replace("-", " ").title()
+                job["source_org_key"] = normalized_org
                 jobs.append(job)
+        logger.info("[ASHBY_FETCH_RESULTS] %s", {"per_org_counts": per_org_counts, "empty_orgs": empty_orgs[:10]})
         return jobs
+
+
+def _normalize_ashby_org_key(value: str) -> str:
+    parsed = requests.utils.urlparse(value)
+    if parsed.netloc.endswith("ashbyhq.com"):
+        path_parts = [part for part in parsed.path.split("/") if part]
+        if path_parts:
+            return path_parts[0]
+    return value.strip().strip("/").lower()

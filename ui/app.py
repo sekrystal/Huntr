@@ -65,9 +65,9 @@ def fetch_json(path: str, method: str = "GET", payload: Optional[dict] = None) -
         response = requests.request(method, f"{API_BASE_URL}{path}", json=payload, timeout=30)
         response.raise_for_status()
         return response.json()
-    except requests.exceptions.ReadTimeout:
+    except requests.exceptions.RequestException as exc:
         if path.startswith("/leads"):
-            st.error(f"Leads request timed out while loading `{path}`. The rest of the page is still available.")
+            st.error(f"Leads request failed while loading `{path}`: {exc}. The rest of the page is still available.")
             return {"items": []}
         raise
 

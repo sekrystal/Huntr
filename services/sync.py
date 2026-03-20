@@ -945,8 +945,11 @@ def sync_all(
                 candidate_rows_by_key[candidate.discovery_key] = (candidate, row, triage_score, triage_reasons)
         candidate_rows = list(candidate_rows_by_key.values())
         cycle_metrics["accepted_results_input_count"] = len(search_results)
+        cycle_metrics["accepted_results_count"] = len(search_results)
         cycle_metrics["convertible_candidate_count"] = convertible_candidate_count
+        cycle_metrics["candidate_conversion_success_count"] = convertible_candidate_count
         cycle_metrics["dropped_result_count"] = max(len(search_results) - convertible_candidate_count, 0)
+        cycle_metrics["candidate_conversion_drop_count"] = max(len(search_results) - convertible_candidate_count, 0)
         cycle_metrics["accepted_urls_sample"] = [result.url for result in search_results[:10]]
         cycle_metrics["dropped_urls_sample"] = [item["url"] for item in dropped_results[:10]]
         selected_discoveries = select_candidates_for_expansion(candidate_rows, settings=settings)
@@ -969,6 +972,16 @@ def sync_all(
             )
             if provenance in {"discovered_existing", "discovered_new"}:
                 cycle_metrics[f"agent_discovered_{candidate.board_type}_expansion_attempts"] += 1
+            if candidate.board_type == "ashby":
+                logger.info(
+                    "[ASHBY_EXPANSION_INPUT] %s",
+                    {
+                        "company": candidate.company_name,
+                        "board_locator": candidate.board_locator,
+                        "surface_provenance": provenance,
+                        "source_lineage": (row.metadata_json or {}).get("source_lineage"),
+                    },
+                )
         discovered_greenhouse_queries = {
             candidate.board_locator: [candidate.discovery_query]
             for candidate, _, _, _ in selected_discoveries
@@ -1082,6 +1095,14 @@ def sync_all(
         )
     if "ashby" in enabled_connectors:
         ashby_orgs = list(dict.fromkeys(settings.ashby_orgs + list(discovered_ashby_queries)))
+        logger.info(
+            "[ASHBY_DISCOVERY_BRIDGE] %s",
+            {
+                "configured_orgs": settings.ashby_orgs,
+                "discovered_orgs": list(discovered_ashby_queries),
+                "requested_orgs": ashby_orgs,
+            },
+        )
         ashby_jobs, ashby_live, _ = run_connector_fetch(
             session,
             "ashby",

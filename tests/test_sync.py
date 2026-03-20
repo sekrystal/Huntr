@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from core.models import Base, CandidateProfile, Lead, Listing
+from core.models import AgentRun, Base, CandidateProfile, Lead, Listing
 from services.pipeline import run_critic_agent
 from services.sync import list_leads
 
@@ -148,6 +148,39 @@ def test_lead_response_exposes_source_provenance_and_lineage() -> None:
     assert items[0].source_provenance == "discovered_new"
     assert items[0].source_lineage == "greenhouse+search_web"
     assert items[0].discovery_source == "search_web"
+
+
+def test_discovery_status_cycle_metrics_support_bridge_samples() -> None:
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(engine)
+    session = sessionmaker(bind=engine, expire_on_commit=False)()
+    _seed_profile(session)
+
+    session.add(
+        AgentRun(
+            agent_name="Discovery",
+            action="recorded discovery cycle metrics",
+            summary="Discovery bridge metrics recorded.",
+            affected_count=1,
+            metadata_json={
+                "cycle_metrics": {
+                    "accepted_results_count": 5,
+                    "candidate_conversion_success_count": 3,
+                    "candidate_conversion_drop_count": 2,
+                    "accepted_urls_sample": ["https://job-boards.greenhouse.io/acme"],
+                    "dropped_urls_sample": ["https://duckduckgo.com/"],
+                }
+            },
+        )
+    )
+    session.commit()
+
+    from services.company_discovery import build_discovery_status
+
+    status = build_discovery_status(session)
+    assert status.cycle_metrics["accepted_results_count"] == 5
+    assert status.cycle_metrics["candidate_conversion_success_count"] == 3
+    assert status.cycle_metrics["accepted_urls_sample"] == ["https://job-boards.greenhouse.io/acme"]
 
 
 def test_default_leads_query_suppresses_stale_listing_even_if_lead_snapshot_looks_fresh() -> None:

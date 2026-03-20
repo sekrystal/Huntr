@@ -5,6 +5,7 @@ from connectors.search_web import (
     _extract_result_url,
     _is_supported_job_surface,
     _parse_search_results_from_html,
+    _surface_acceptance_reason,
     derive_search_results_from_extraction,
     extract_ats_identifiers_from_html,
 )
@@ -87,3 +88,8 @@ def test_supported_job_surface_accepts_careers_variants_and_blocks_aggregators()
     assert _is_supported_job_surface("https://jobs.ashbyhq.com/acme")
     assert not _is_supported_job_surface("https://www.linkedin.com/jobs/view/1")
     assert not _is_supported_job_surface("https://www.indeed.com/viewjob?jk=123")
+
+
+def test_surface_acceptance_reason_rejects_duckduckgo_self_links() -> None:
+    assert _surface_acceptance_reason("https://duckduckgo.com/") == "provider_self_link"
+    assert _surface_acceptance_reason("https://duckduckgo.com/help") == "provider_self_link"
