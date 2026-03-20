@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from collections import Counter
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from core.config import get_settings
+from core.logging import get_logger
 from core.models import AgentRun, FollowUpTask, Investigation, Lead, Listing, RunDigest, Signal
 from core.schemas import AgentRunResponse, ListingRecord, SignalRecord
 from services.activity import append_lead_agent_trace, log_agent_activity, log_agent_run
@@ -23,6 +25,9 @@ from services.sync import (
     apply_critic_decision_to_lead,
     sync_all,
 )
+
+
+logger = get_logger(__name__)
 
 
 DEMO_SCOUT_BATCHES: list[dict[str, list[dict]]] = [
@@ -247,7 +252,11 @@ def run_scout_agent(
         signal_count = result.signals_ingested
     new_names = [f"{lead.company_name} / {lead.primary_title}" for lead in inserted_leads[:4]]
     mode_label = "live source data" if source_mode == "live" else "source data"
-    summary = f"Scout added {listing_count} listings and {signal_count} signals from {mode_label}. New rows: {', '.join(new_names) if new_names else 'none'}."
+    discovery_suffix = f" {result.discovery_summary}" if result.discovery_summary else ""
+    summary = (
+        f"Scout added {listing_count} listings and {signal_count} signals from {mode_label}. "
+        f"New rows: {', '.join(new_names) if new_names else 'none'}.{discovery_suffix}"
+    )
     log_agent_activity(
         session,
         agent_name="Scout",
@@ -267,6 +276,8 @@ def run_scout_agent(
             "source_mode": source_mode,
             "listing_count": listing_count,
             "signal_count": signal_count,
+            "discovery_metrics": result.discovery_metrics,
+            "discovery_summary": result.discovery_summary,
         },
     )
     return AgentRunResponse(agent="scout", summary=summary)
@@ -378,7 +389,67 @@ def run_ranker_agent(
         lambda lead: f"Ranker set {lead.rank_label} priority with {lead.confidence_label} confidence",
     )
     visible = sum(1 for lead in leads if not lead.hidden)
-    top_visible = session.scalars(select(Lead).where(Lead.hidden.is_(False)).order_by(Lead.updated_at.desc()).limit(3)).all()
+    top_visible = session.scalars(select(Lead).where(Lead.hidden.is_(False)).order_by(Lead.updated_at.desc()).limit(10)).all()
+    visible_all = session.scalars(select(Lead).where(Lead.hidden.is_(False))).all()
+    title_fit_buckets = Counter(lead.title_fit_label for lead in visible_all)
+    qualification_buckets = Counter(lead.qualification_fit_label for lead in visible_all)
+    rank_buckets = Counter(lead.rank_label for lead in visible_all)
+    source_buckets = Counter(
+        (lead.evidence_json or {}).get("source_platform", (lead.evidence_json or {}).get("source_type", "unknown"))
+        for lead in visible_all
+    )
+    visible_scores = [
+        float((lead.score_breakdown_json or {}).get("composite", 0.0))
+        for lead in top_visible
+    ]
+    if visible_scores:
+        max_score = max(visible_scores)
+        min_score = min(visible_scores)
+        avg_score = round(sum(visible_scores) / len(visible_scores), 2)
+        logger.info("[RANK_DISTRIBUTION] max=%s min=%s avg=%s", max_score, min_score, avg_score)
+        if len(set(visible_scores)) == 1 or (max_score - min_score) <= 0.15:
+            logger.error("[RANK_FAILURE] Ranking has no meaningful differentiation between jobs.")
+    for lead in top_visible[:10]:
+        score_breakdown = lead.score_breakdown_json or {}
+        logger.info(
+            "[JOB_DEBUG] title=%s company=%s score=%s fit=%s source=%s",
+            lead.primary_title,
+            lead.company_name,
+            score_breakdown.get("composite"),
+            score_breakdown.get("title_fit"),
+            (lead.evidence_json or {}).get("source_platform", (lead.evidence_json or {}).get("source_type")),
+        )
+    for lead in top_visible[:5]:
+        logger.info(
+            "[TOP_SCORE_BREAKDOWN] %s",
+            {
+                "title": lead.primary_title,
+                "company": lead.company_name,
+                "source": (lead.evidence_json or {}).get("source_platform", (lead.evidence_json or {}).get("source_type")),
+                "rank_label": lead.rank_label,
+                "confidence_label": lead.confidence_label,
+                "qualification_fit_label": lead.qualification_fit_label,
+                "score_breakdown_json": lead.score_breakdown_json or {},
+            },
+        )
+    logger.info("[VISIBLE_TITLE_FIT_BUCKETS] %s", dict(title_fit_buckets))
+    logger.info("[VISIBLE_QUALIFICATION_BUCKETS] %s", dict(qualification_buckets))
+    logger.info("[VISIBLE_RANK_BUCKETS] %s", dict(rank_buckets))
+    logger.info("[VISIBLE_SOURCE_BUCKETS] %s", dict(source_buckets))
+    logger.info(
+        "[TOP_JOBS_DEBUG] %s",
+        [
+            {
+                "title": lead.primary_title,
+                "company": lead.company_name,
+                "score": (lead.score_breakdown_json or {}).get("composite"),
+                "fit": (lead.score_breakdown_json or {}).get("title_fit"),
+                "source": (lead.evidence_json or {}).get("source_platform", (lead.evidence_json or {}).get("source_type")),
+            }
+            for lead in top_visible[:5]
+        ],
+    )
+    top_visible = top_visible[:3]
     top_names = [f"{lead.company_name} / {lead.primary_title}" for lead in top_visible]
     summary = f"Ranker reprioritized the lead set. Top visible rows: {', '.join(top_names) if top_names else 'none'}."
     log_agent_activity(
@@ -539,6 +610,11 @@ def run_full_pipeline(
     tracker = run_tracker_agent(session)
     learning = run_query_evolution_agent(session)
     governance = evaluate_learning_governance(session)
+    final_jobs = session.scalars(
+        select(Lead).where(Lead.hidden.is_(False)).order_by(Lead.updated_at.desc(), Lead.surfaced_at.desc()).limit(5)
+    ).all()
+    logger.info("[SURFACED_JOBS] count=%s", session.scalar(select(func.count(Lead.id)).where(Lead.hidden.is_(False))) or 0)
+    logger.info("[TOP_JOBS] %s", [lead.primary_title for lead in final_jobs])
     summary = " | ".join(
         [
             scout.summary,
@@ -571,6 +647,12 @@ def run_full_pipeline(
         f"{task.application_id}:{task.task_type}"
         for task in session.scalars(select(FollowUpTask).where(FollowUpTask.created_at >= cycle_started_at)).all()
     ][:8]
+    final_visible_all = session.scalars(select(Lead).where(Lead.hidden.is_(False))).all()
+    final_source_buckets = Counter(
+        (lead.evidence_json or {}).get("source_platform", (lead.evidence_json or {}).get("source_type", "unknown"))
+        for lead in final_visible_all
+    )
+    logger.info("[FINAL_VISIBLE_SOURCE_MIX] %s", dict(final_source_buckets))
     latest_learning_run = session.scalar(
         select(AgentRun)
         .where(AgentRun.agent_name == "Learning", AgentRun.action == "expanded watchlist")
@@ -603,12 +685,17 @@ def run_full_pipeline(
             "cycle_started_at": cycle_started_at.isoformat(),
         },
     )
+    digest_summary = scout.summary
+    if "No jobs found from any connector." in scout.summary:
+        digest_summary = "No jobs found from any connector."
+    elif "Jobs were discovered but all were filtered out before surfacing." in scout.summary:
+        digest_summary = "Jobs were discovered but all were filtered out before surfacing."
+    elif final_jobs:
+        digest_summary = "Jobs found and surfaced normally."
     record_run_digest(
         session,
         agent_run=pipeline_run,
-        summary="No material changes in this cycle."
-        if not any([new_rows, suppressed, investigations_changed, follow_up_changes, watchlist_changes])
-        else summary,
+        summary=digest_summary if not any([new_rows, suppressed, investigations_changed, follow_up_changes, watchlist_changes]) else summary,
         new_leads=new_rows,
         suppressed_leads=suppressed,
         investigations_changed=investigations_changed,

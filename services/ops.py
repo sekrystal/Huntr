@@ -13,7 +13,13 @@ def get_runtime_connector_set(settings: Settings | None = None) -> tuple[str, se
     settings = settings or get_settings()
     if settings.demo_mode:
         return "demo", {"greenhouse", "ashby", "x_search"}, set()
-    enabled_connectors = {"greenhouse"} if settings.greenhouse_enabled else set()
+    enabled_connectors: set[str] = set()
+    if settings.greenhouse_enabled:
+        enabled_connectors.add("greenhouse")
+    if settings.ashby_orgs or settings.search_discovery_enabled:
+        enabled_connectors.add("ashby")
+    if settings.search_discovery_enabled:
+        enabled_connectors.add("search_web")
     strict_live = set(enabled_connectors)
     return "live", enabled_connectors, strict_live
 

@@ -151,6 +151,9 @@ class SyncResult(BaseModel):
     leads_updated: int
     rechecks_queued: int
     live_mode_used: bool
+    discovery_metrics: dict[str, dict[str, int]] = Field(default_factory=dict)
+    surfaced_count: int = 0
+    discovery_summary: Optional[str] = None
 
 
 class StatsResponse(BaseModel):

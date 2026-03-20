@@ -31,6 +31,34 @@ def test_runtime_connector_set_respects_greenhouse_kill_switch() -> None:
     assert strict == set()
 
 
+def test_runtime_connector_set_enables_search_and_ashby_for_search_discovery() -> None:
+    settings = Settings(
+        demo_mode=False,
+        autonomy_enabled=True,
+        greenhouse_enabled=True,
+        search_discovery_enabled=True,
+        database_url="sqlite:///:memory:",
+    )
+    source_mode, enabled, strict = get_runtime_connector_set(settings)
+    assert source_mode == "live"
+    assert enabled == {"greenhouse", "ashby", "search_web"}
+    assert strict == {"greenhouse", "ashby", "search_web"}
+
+
+def test_runtime_connector_set_enables_ashby_when_orgs_are_configured() -> None:
+    settings = Settings(
+        demo_mode=False,
+        autonomy_enabled=True,
+        greenhouse_enabled=False,
+        ashby_org_keys="mercor,vercel",
+        database_url="sqlite:///:memory:",
+    )
+    source_mode, enabled, strict = get_runtime_connector_set(settings)
+    assert source_mode == "live"
+    assert enabled == {"ashby"}
+    assert strict == {"ashby"}
+
+
 def test_daily_caps_limit_generated_queries_and_watchlist_items() -> None:
     session = build_session()
     settings = Settings(
@@ -51,6 +79,8 @@ def test_alerts_record_greenhouse_incident_and_rate_limit() -> None:
     settings = Settings(
         database_url="sqlite:///:memory:",
         alerts_enabled=False,
+        autonomy_enabled=True,
+        greenhouse_enabled=True,
         alert_window_seconds=3600,
         alert_max_per_window=10,
         alert_no_successful_fetch_seconds=1,

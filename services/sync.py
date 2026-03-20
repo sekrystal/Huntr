@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from functools import partial
 from collections import defaultdict
+from collections import Counter
 from typing import Optional
 
 from sqlalchemy import func, select
@@ -18,6 +19,7 @@ from connectors.search_web import (
 )
 from connectors.x_search import XSearchConnector
 from core.config import get_settings
+from core.logging import get_logger
 from core.models import Application, Investigation, Lead, Listing, RecheckQueue, Signal, SourceQuery, WatchlistItem
 from core.schemas import ListingRecord, LeadResponse, SignalRecord, StatsResponse, SyncResult
 from services.activity import append_lead_agent_trace
@@ -33,6 +35,9 @@ from services.profile import get_candidate_profile
 from services.query_learning import ensure_source_queries
 from services.ranking import infer_role_family, score_lead
 from services.resolve_company import get_or_create_company, queue_recheck, resolve_company_name
+
+
+logger = get_logger(__name__)
 
 
 def _source_learning(profile) -> dict:
@@ -59,6 +64,30 @@ def _isoformat_utc(value):
     if not normalized:
         return None
     return normalized.isoformat().replace("+00:00", "Z")
+
+
+def _verify_listing_record(record: ListingRecord) -> bool:
+    if not record:
+        return False
+    if not record.url:
+        return False
+    external_id = (record.metadata_json or {}).get("internal_job_id")
+    if not external_id:
+        return False
+    lowered_url = record.url.lower()
+    if "greenhouse.io" not in lowered_url and "ashbyhq.com" not in lowered_url:
+        return False
+    return True
+
+
+def _verify_signal_record(record: SignalRecord) -> bool:
+    if not record:
+        return False
+    if not record.source_url:
+        return False
+    if not record.raw_text:
+        return False
+    return True
 
 
 def _upsert_signal(session: Session, record: SignalRecord) -> Signal:
@@ -448,6 +477,17 @@ def _upsert_lead(
             "overqualified": "overqualified",
             "unclear": "unclear",
         }.get(ai_fit.get("classification"), displayed_fit_label)
+        if displayed_fit_label != breakdown["qualification_fit_label"]:
+            logger.info(
+                "[AI_FIT_LABEL_CHANGE] %s",
+                {
+                    "title": title,
+                    "company": company_name,
+                    "deterministic_label": breakdown["qualification_fit_label"],
+                    "ai_label": displayed_fit_label,
+                    "source_type": source_type,
+                },
+            )
         ai_matched_fields = ai_fit.get("matched_profile_fields", [])
         if ai_matched_fields:
             breakdown["matched_profile_fields"] = list(
@@ -577,6 +617,7 @@ def sync_all(
     x_live = False
     discovered_greenhouse_queries: dict[str, list[str]] = {}
     discovered_ashby_queries: dict[str, list[str]] = {}
+    discovery_metrics: dict[str, dict[str, int]] = {}
 
     watchlist_values = [
         item.value
@@ -600,6 +641,16 @@ def sync_all(
         )
         discovered_greenhouse_queries = extract_discovered_greenhouse_tokens(search_results)
         discovered_ashby_queries = extract_discovered_ashby_orgs(search_results)
+    search_verified_count = sum(
+        1
+        for result in search_results
+        if result.url and ("greenhouse.io" in result.url.lower() or "ashbyhq.com" in result.url.lower())
+    )
+    discovery_metrics["search_web"] = {
+        "raw": len(search_results),
+        "normalized": len(search_results),
+        "verified": search_verified_count,
+    }
 
     if "greenhouse" in enabled_connectors:
         greenhouse_tokens = list(dict.fromkeys(settings.greenhouse_tokens + list(discovered_greenhouse_queries)))
@@ -635,6 +686,32 @@ def sync_all(
             date_fields=["published_at"],
         )
 
+    greenhouse_normalized = [normalize_greenhouse_job(job) for job in greenhouse_jobs]
+    greenhouse_verified = [validate_listing(record) for record in greenhouse_normalized if _verify_listing_record(record)]
+    discovery_metrics["greenhouse"] = {
+        "raw": len(greenhouse_jobs),
+        "normalized": len(greenhouse_normalized),
+        "verified": len(greenhouse_verified),
+    }
+    logger.info(
+        "[VERIFICATION] connector=greenhouse before=%s after=%s",
+        len(greenhouse_normalized),
+        len(greenhouse_verified),
+    )
+
+    ashby_normalized = [normalize_ashby_job(job, job.get("companyName")) for job in ashby_jobs]
+    ashby_verified = [validate_listing(record) for record in ashby_normalized if _verify_listing_record(record)]
+    discovery_metrics["ashby"] = {
+        "raw": len(ashby_jobs),
+        "normalized": len(ashby_normalized),
+        "verified": len(ashby_verified),
+    }
+    logger.info(
+        "[VERIFICATION] connector=ashby before=%s after=%s",
+        len(ashby_normalized),
+        len(ashby_verified),
+    )
+
     signals_ingested = 0
     listings_ingested = 0
     leads_created = 0
@@ -642,16 +719,30 @@ def sync_all(
     rechecks_queued = 0
     investigations_opened = 0
 
+    extracted_signals = extract_many(x_raw_signals)
+    verified_signals = [raw for raw in extracted_signals if _verify_signal_record(raw)]
+    discovery_metrics["x_search"] = {
+        "raw": len(x_raw_signals),
+        "normalized": len(extracted_signals),
+        "verified": len(verified_signals),
+    }
+    logger.info(
+        "[VERIFICATION] connector=x_search before=%s after=%s",
+        len(extracted_signals),
+        len(verified_signals),
+    )
+    logger.info("[DISCOVERY_METRICS] %s", discovery_metrics)
+
     signal_objects: list[Signal] = []
-    for raw in extract_many(x_raw_signals):
+    for raw in verified_signals:
         if raw.published_at and isinstance(raw.published_at, str):
             raw.published_at = datetime.fromisoformat(raw.published_at.replace("Z", "+00:00"))
         signal = _upsert_signal(session, raw)
         signals_ingested += 1
         signal_objects.append(signal)
 
-    listing_records = [validate_listing(normalize_greenhouse_job(job)) for job in greenhouse_jobs]
-    listing_records.extend(validate_listing(normalize_ashby_job(job, job.get("companyName"))) for job in ashby_jobs)
+    listing_records = list(greenhouse_verified)
+    listing_records.extend(ashby_verified)
 
     listing_objects: list[Listing] = []
     for record in listing_records:
@@ -826,6 +917,21 @@ def sync_all(
 
     generate_follow_up_tasks(session)
     session.flush()
+    surfaced_count = session.scalar(select(func.count(Lead.id)).where(Lead.hidden.is_(False))) or 0
+    discovery_summary = None
+    if (
+        discovery_metrics.get("greenhouse", {}).get("verified", 0) == 0
+        and discovery_metrics.get("ashby", {}).get("verified", 0) == 0
+        and discovery_metrics.get("search_web", {}).get("raw", 0) > 0
+        and surfaced_count == 0
+    ):
+        discovery_summary = "Jobs were discovered but all were filtered out before surfacing."
+        logger.error("[DISCOVERY_FAILURE] No high-signal jobs. Only weak signals found and filtered out.")
+    elif all(item.get("raw", 0) == 0 for item in discovery_metrics.values()):
+        discovery_summary = "No jobs found from any connector."
+        logger.error("[DISCOVERY_FAILURE] No jobs found from any source.")
+    elif surfaced_count > 0:
+        discovery_summary = "Jobs found and surfaced normally."
     return SyncResult(
         signals_ingested=signals_ingested,
         listings_ingested=listings_ingested,
@@ -833,6 +939,9 @@ def sync_all(
         leads_updated=leads_updated,
         rechecks_queued=rechecks_queued,
         live_mode_used=any([greenhouse_live, ashby_live, search_live, x_live]),
+        discovery_metrics=discovery_metrics,
+        surfaced_count=surfaced_count,
+        discovery_summary=discovery_summary,
     )
 
 
@@ -851,7 +960,11 @@ def list_leads(
     profile = get_candidate_profile(session)
     duplicate_losers = _duplicate_winner_context(session, records)
     items: list[LeadResponse] = []
+    omitted_by_status: Counter[str] = Counter()
+    omitted_by_category: Counter[str] = Counter()
+    total_considered = 0
     for lead in records:
+        total_considered += 1
         evidence = lead.evidence_json or {}
         decision = evaluate_critic_decision(
             session=session,
@@ -879,8 +992,10 @@ def list_leads(
             continue
 
         if lead_type and lead.lead_type != lead_type:
+            omitted_by_status["lead_type_filtered"] += 1
             continue
         if lead.lead_type == "signal" and lead_type != "signal" and not include_signal_only:
+            omitted_by_status["signal_only_filtered"] += 1
             continue
         if not include_hidden and not decision["visible"]:
             if lead.lead_type == "signal" and include_signal_only and decision["status"] in {"uncertain", "investigation"}:
@@ -888,8 +1003,12 @@ def list_leads(
             elif include_unqualified and decision["suppression_category"] == "qualification":
                 pass
             else:
+                omitted_by_status[decision["status"]] += 1
+                omitted_by_category[decision["suppression_category"]] += 1
                 continue
         if freshness_window_days is not None and freshness_hours is not None and freshness_hours > freshness_window_days * 24:
+            omitted_by_status["freshness_window_filtered"] += 1
+            omitted_by_category["stale"] += 1
             continue
 
         response_evidence = dict(evidence)
@@ -947,6 +1066,15 @@ def list_leads(
                 evidence_json=response_evidence,
             )
         )
+    logger.info(
+        "[READTIME_CRITIC_DROPS] %s",
+        {
+            "total_considered": total_considered,
+            "total_returned": len(items),
+            "omitted_by_status": dict(omitted_by_status),
+            "omitted_by_category": dict(omitted_by_category),
+        },
+    )
     rank_order = {"strong": 0, "medium": 1, "weak": 2}
     freshness_order = {"fresh": 0, "recent": 1, "stale": 2, "unknown": 3}
     lead_type_order = {"combined": 0, "listing": 1, "signal": 2}
