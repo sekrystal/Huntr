@@ -62,7 +62,8 @@ class TableFilters(dict):
 
 def fetch_json(path: str, method: str = "GET", payload: Optional[dict] = None) -> Any:
     try:
-        response = requests.request(method, f"{API_BASE_URL}{path}", json=payload, timeout=30)
+        timeout = 10 if path.startswith("/leads") else 30
+        response = requests.request(method, f"{API_BASE_URL}{path}", json=payload, timeout=timeout)
         response.raise_for_status()
         return response.json()
     except requests.exceptions.RequestException as exc:

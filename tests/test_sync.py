@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+import logging
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -372,6 +373,154 @@ def test_ranker_cannot_force_suppressed_row_into_default_results() -> None:
 
     items = list_leads(session)
     assert items == []
+
+
+def test_list_leads_emits_timing_logs_on_success(caplog) -> None:
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(engine)
+    session = sessionmaker(bind=engine, expire_on_commit=False)()
+    _seed_profile(session)
+
+    listing = Listing(
+        company_name="Timing Co",
+        title="Operations Lead",
+        location="Remote, US",
+        url="https://job-boards.greenhouse.io/timing/jobs/1",
+        source_type="greenhouse",
+        posted_at=datetime.utcnow(),
+        first_published_at=datetime.utcnow(),
+        last_seen_at=datetime.utcnow(),
+        description_text="Own planning and cadence.",
+        listing_status="active",
+        freshness_hours=2.0,
+        freshness_days=0,
+        metadata_json={},
+    )
+    session.add(listing)
+    session.flush()
+    session.add(
+        Lead(
+            lead_type="listing",
+            company_name="Timing Co",
+            primary_title="Operations Lead",
+            listing_id=listing.id,
+            surfaced_at=datetime.utcnow(),
+            rank_label="strong",
+            confidence_label="high",
+            freshness_label="fresh",
+            title_fit_label="core match",
+            qualification_fit_label="strong fit",
+            explanation="Visible listing",
+            score_breakdown_json={"composite": 6.1},
+            evidence_json={"url": listing.url, "source_type": "greenhouse", "source_platform": "greenhouse"},
+            hidden=False,
+        )
+    )
+    session.commit()
+
+    with caplog.at_level(logging.INFO):
+        items = list_leads(session)
+
+    assert len(items) == 1
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("[LEADS_REQUEST_START]" in message for message in messages)
+    assert any("[LEADS_STAGE_TIMING]" in message for message in messages)
+    assert any("[LEADS_TIMING]" in message for message in messages)
+
+
+def test_list_leads_location_cache_and_deduped_location_logs(caplog) -> None:
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(engine)
+    session = sessionmaker(bind=engine, expire_on_commit=False)()
+    _seed_profile(session)
+
+    first_listing = Listing(
+        company_name="Stripe",
+        title="Account Executive",
+        location="Dublin, Ireland",
+        url="https://boards.greenhouse.io/stripe/jobs/1",
+        source_type="greenhouse",
+        posted_at=datetime.utcnow(),
+        first_published_at=datetime.utcnow(),
+        last_seen_at=datetime.utcnow(),
+        description_text="Revenue role.",
+        listing_status="active",
+        freshness_hours=4.0,
+        freshness_days=0,
+        metadata_json={},
+    )
+    second_listing = Listing(
+        company_name="Stripe",
+        title="Account Executive",
+        location="Dublin, Ireland",
+        url="https://boards.greenhouse.io/stripe/jobs/2",
+        source_type="greenhouse",
+        posted_at=datetime.utcnow(),
+        first_published_at=datetime.utcnow(),
+        last_seen_at=datetime.utcnow(),
+        description_text="Revenue role duplicate.",
+        listing_status="active",
+        freshness_hours=4.0,
+        freshness_days=0,
+        metadata_json={},
+    )
+    session.add_all([first_listing, second_listing])
+    session.flush()
+    session.add_all(
+        [
+            Lead(
+                lead_type="listing",
+                company_name="Stripe",
+                primary_title="Account Executive",
+                listing_id=first_listing.id,
+                surfaced_at=datetime.utcnow(),
+                rank_label="strong",
+                confidence_label="high",
+                freshness_label="fresh",
+                title_fit_label="core match",
+                qualification_fit_label="strong fit",
+                explanation="Blocked by geography",
+                score_breakdown_json={"composite": 6.0},
+                evidence_json={"url": first_listing.url, "source_type": "greenhouse", "source_platform": "greenhouse"},
+                hidden=False,
+            ),
+            Lead(
+                lead_type="listing",
+                company_name="Stripe",
+                primary_title="Account Executive",
+                listing_id=second_listing.id,
+                surfaced_at=datetime.utcnow(),
+                rank_label="strong",
+                confidence_label="high",
+                freshness_label="fresh",
+                title_fit_label="core match",
+                qualification_fit_label="strong fit",
+                explanation="Blocked by geography",
+                score_breakdown_json={"composite": 6.0},
+                evidence_json={"url": second_listing.url, "source_type": "greenhouse", "source_platform": "greenhouse"},
+                hidden=False,
+            ),
+        ]
+    )
+    session.commit()
+
+    with caplog.at_level(logging.INFO):
+        items = list_leads(session)
+
+    assert items == []
+    messages = [record.getMessage() for record in caplog.records]
+    location_gate_messages = [message for message in messages if "[LOCATION_GATE]" in message]
+    assert len(location_gate_messages) == 1
+
+    cache_message = next(message for message in messages if "[LOCATION_GATE_CACHE]" in message)
+    assert "'total_calls': 2" in cache_message
+    assert "'unique_keys': 1" in cache_message
+    assert "'cache_hits': 1" in cache_message
+    assert "'cache_misses': 1" in cache_message
+
+    deduped_message = next(message for message in messages if "[LOCATION_GATE_DEDUPED]" in message)
+    assert "'emitted_count': 1" in deduped_message
+    assert "'suppressed_duplicate_count': 1" in deduped_message
 
 
 def test_default_leads_query_returns_timestamp_precision_and_recently_seen_rows_only() -> None:

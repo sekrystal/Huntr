@@ -105,8 +105,10 @@ def test_filter_and_sort_table_sorts_by_freshness_and_date() -> None:
 
 def test_fetch_json_returns_empty_leads_payload_on_request_failure(monkeypatch) -> None:
     captured: list[str] = []
+    captured_timeout: list[int] = []
 
     def fake_request(*args, **kwargs):
+        captured_timeout.append(kwargs.get("timeout"))
         raise requests.exceptions.ReadTimeout("timeout")
 
     def fake_error(message: str) -> None:
@@ -119,3 +121,4 @@ def test_fetch_json_returns_empty_leads_payload_on_request_failure(monkeypatch) 
 
     assert payload == {"items": []}
     assert captured
+    assert captured_timeout == [10]

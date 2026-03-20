@@ -19,7 +19,7 @@ from connectors.search_web import (
 from connectors.x_search import XSearchConnector
 from core.config import get_settings
 from core.logging import get_logger
-from core.models import Application, CompanyDiscovery, Investigation, Lead, Listing, RecheckQueue, Signal, SourceQuery, WatchlistItem
+from core.models import Application, CompanyDiscovery, FollowUpTask, Investigation, Lead, Listing, RecheckQueue, Signal, SourceQuery, WatchlistItem
 from core.schemas import ListingRecord, LeadResponse, SignalRecord, StatsResponse, SyncResult
 from services.activity import append_lead_agent_trace, log_agent_activity, log_agent_run
 from services.ai_judges import judge_critic_with_ai, judge_fit_with_ai
@@ -42,7 +42,7 @@ from services.explain import build_explanation
 from services.extract_signal import extract_many
 from services.freshness import classify_freshness_label, has_expired_pattern, validate_listing
 from services.investigations import mark_investigation_attempt, upsert_investigation
-from services.learning import generate_follow_up_tasks, increment_query_stat, next_action_for_application
+from services.learning import generate_follow_up_tasks, increment_query_stat
 from services.location_policy import classify_location_scope, is_location_allowed_for_profile
 from services.normalize import normalize_ashby_job, normalize_greenhouse_job
 from services.profile import get_candidate_profile
@@ -252,6 +252,8 @@ def evaluate_critic_decision(
     freshness_window_days: Optional[int] = 14,
     duplicate_losers: Optional[dict[int, str]] = None,
     listing_cache: Optional[dict[int, Listing]] = None,
+    location_policy_evaluator=None,
+    location_log_state: Optional[dict] = None,
 ) -> dict:
     duplicate_losers = duplicate_losers or {}
     context = _authoritative_listing_context(session, lead, listing_cache=listing_cache)
@@ -265,7 +267,11 @@ def evaluate_critic_decision(
     http_status = context["http_status"]
     last_seen_at = context["last_seen_at"]
     location = context["location"]
-    location_policy = is_location_allowed_for_profile(profile, location, settings=get_settings())
+    location_policy = (
+        location_policy_evaluator(lead, location)
+        if location_policy_evaluator
+        else is_location_allowed_for_profile(profile, location, settings=get_settings())
+    )
     reasons: list[str] = []
     status = "visible"
     suppression_category = "none"
@@ -325,17 +331,31 @@ def evaluate_critic_decision(
             status = "suppressed"
             suppression_category = "stale"
         if not location_policy["allowed"] and status == "visible":
-            logger.info(
-                "[LOCATION_GATE] %s",
-                {
-                    "company": lead.company_name,
-                    "title": lead.primary_title,
-                    "location": location,
-                    "scope": location_policy["scope"],
-                    "status": location_policy["status"],
-                    "reason": location_policy["reason"],
-                },
-            )
+            location_payload = {
+                "company": lead.company_name,
+                "title": lead.primary_title,
+                "location": location,
+                "scope": location_policy["scope"],
+                "status": location_policy["status"],
+                "reason": location_policy["reason"],
+            }
+            if location_log_state is not None:
+                event_key = (
+                    lead.company_name,
+                    lead.primary_title,
+                    location,
+                    location_policy["scope"],
+                    location_policy["status"],
+                    location_policy["reason"],
+                )
+                if event_key not in location_log_state["seen"]:
+                    location_log_state["seen"].add(event_key)
+                    location_log_state["emitted_count"] += 1
+                    logger.info("[LOCATION_GATE] %s", location_payload)
+                else:
+                    location_log_state["suppressed_duplicate_count"] += 1
+            else:
+                logger.info("[LOCATION_GATE] %s", location_payload)
             reasons.append(location_policy["reason"])
             if location_policy["status"] == "blocked":
                 status = "suppressed"
@@ -395,6 +415,7 @@ def evaluate_critic_decision(
         "visible": status == "visible",
         "reasons": reasons,
         "suppression_category": suppression_category,
+        "listing": context["listing"],
         "authoritative_url": url,
         "listing_status": listing_status,
         "freshness_hours": freshness_hours,
@@ -1622,176 +1643,6 @@ def list_leads(
     include_signal_only: bool = False,
 ) -> list[LeadResponse]:
     started_at = perf_counter()
-    records = session.scalars(select(Lead).order_by(Lead.surfaced_at.desc(), Lead.rank_label.asc())).all()
-    lead_ids = [lead.id for lead in records]
-    listing_ids = [lead.listing_id for lead in records if lead.listing_id]
-    applications = (
-        session.scalars(select(Application).where(Application.lead_id.in_(lead_ids))).all()
-        if lead_ids
-        else []
-    )
-    listing_cache = {
-        listing.id: listing
-        for listing in (
-            session.scalars(select(Listing).where(Listing.id.in_(listing_ids))).all()
-            if listing_ids
-            else []
-        )
-    }
-    profile = get_candidate_profile(session)
-    duplicate_losers = _duplicate_winner_context(session, records, listing_cache=listing_cache)
-    db_fetch_ms = round((perf_counter() - started_at) * 1000, 2)
-    application_by_lead_id = {application.lead_id: application for application in applications}
-    items: list[LeadResponse] = []
-    omitted_by_status: Counter[str] = Counter()
-    omitted_by_category: Counter[str] = Counter()
-    total_considered = 0
-    critic_filter_ms = 0.0
-    serialization_ms = 0.0
-    for lead in records:
-        total_considered += 1
-        critic_started = perf_counter()
-        evidence = lead.evidence_json or {}
-        decision = evaluate_critic_decision(
-            session=session,
-            lead=lead,
-            profile=profile,
-            freshness_window_days=freshness_window_days,
-            duplicate_losers=duplicate_losers,
-            listing_cache=listing_cache,
-        )
-        authoritative = _authoritative_listing_context(session, lead, listing_cache=listing_cache)
-        authoritative_listing = authoritative.get("listing")
-        freshness_days = decision["freshness_days"]
-        freshness_hours = decision["freshness_hours"]
-        listing_status = decision["listing_status"]
-        source_type = evidence.get("source_type", lead.lead_type)
-        application = application_by_lead_id.get(lead.id)
-        saved = application is not None and application.date_saved is not None
-        applied = application is not None and application.date_applied is not None
-        current_status = application.current_status if application else None
-
-        if only_saved and not saved:
-            critic_filter_ms += (perf_counter() - critic_started) * 1000
-            continue
-        if only_applied and not applied:
-            critic_filter_ms += (perf_counter() - critic_started) * 1000
-            continue
-        if status and current_status != status:
-            critic_filter_ms += (perf_counter() - critic_started) * 1000
-            continue
-
-        if lead_type and lead.lead_type != lead_type:
-            omitted_by_status["lead_type_filtered"] += 1
-            critic_filter_ms += (perf_counter() - critic_started) * 1000
-            continue
-        if lead.lead_type == "signal" and lead_type != "signal" and not include_signal_only:
-            omitted_by_status["signal_only_filtered"] += 1
-            critic_filter_ms += (perf_counter() - critic_started) * 1000
-            continue
-        if not include_hidden and not decision["visible"]:
-            if lead.lead_type == "signal" and include_signal_only and decision["status"] in {"uncertain", "investigation"}:
-                pass
-            elif include_unqualified and decision["suppression_category"] == "qualification":
-                pass
-            else:
-                omitted_by_status[decision["status"]] += 1
-                omitted_by_category[decision["suppression_category"]] += 1
-                critic_filter_ms += (perf_counter() - critic_started) * 1000
-                continue
-        if freshness_window_days is not None and freshness_hours is not None and freshness_hours > freshness_window_days * 24:
-            omitted_by_status["freshness_window_filtered"] += 1
-            omitted_by_category["stale"] += 1
-            critic_filter_ms += (perf_counter() - critic_started) * 1000
-            continue
-        next_action, follow_up_due = next_action_for_application(session, application.id) if application else (None, False)
-        critic_filter_ms += (perf_counter() - critic_started) * 1000
-
-        serialization_started = perf_counter()
-        response_evidence = dict(evidence)
-        listing_metadata = dict((authoritative_listing.metadata_json or {})) if authoritative_listing else {}
-        response_evidence["discovery_source"] = response_evidence.get("discovery_source") or listing_metadata.get("discovery_source")
-        response_evidence["source_provenance"] = response_evidence.get("source_provenance") or listing_metadata.get("surface_provenance")
-        response_evidence["source_lineage"] = response_evidence.get("source_lineage") or listing_metadata.get("source_lineage") or response_evidence.get("source_platform")
-        response_evidence["critic_status"] = decision["status"]
-        response_evidence["critic_reasons"] = decision["reasons"]
-        response_evidence["suppression_reason"] = "; ".join(decision["reasons"]) if decision["status"] != "visible" else None
-        response_evidence["suppression_category"] = decision["suppression_category"]
-        response_evidence["liveness_evidence"] = decision["liveness_evidence"]
-        response_evidence["listing_status"] = listing_status
-        response_evidence["freshness_hours"] = freshness_hours
-        response_evidence["freshness_days"] = freshness_days
-        response_evidence["url"] = decision["authoritative_url"]
-        response_evidence["posted_at"] = _isoformat_utc(decision["posted_at"])
-        response_evidence["first_published_at"] = _isoformat_utc(decision["first_published_at"])
-        response_evidence["discovered_at"] = _isoformat_utc(decision["discovered_at"])
-        response_evidence["last_seen_at"] = _isoformat_utc(decision["last_seen_at"])
-        response_evidence["updated_at"] = _isoformat_utc(decision["updated_at"])
-
-        items.append(
-            LeadResponse(
-                id=lead.id,
-                lead_type=lead.lead_type,
-                company_name=lead.company_name,
-                primary_title=lead.primary_title,
-                url=decision["authoritative_url"],
-                source_type=source_type,
-                listing_status=listing_status,
-                first_published_at=_ensure_utc_datetime(decision["first_published_at"]),
-                discovered_at=_ensure_utc_datetime(decision["discovered_at"]),
-                last_seen_at=_ensure_utc_datetime(decision["last_seen_at"]),
-                updated_at=_ensure_utc_datetime(decision["updated_at"] or lead.updated_at),
-                freshness_hours=freshness_hours,
-                freshness_days=freshness_days,
-                posted_at=_ensure_utc_datetime(decision["posted_at"]),
-                surfaced_at=_ensure_utc_datetime(lead.surfaced_at),
-                rank_label=lead.rank_label,
-                confidence_label=lead.confidence_label,
-                freshness_label=lead.freshness_label,
-                title_fit_label=lead.title_fit_label,
-                qualification_fit_label=lead.qualification_fit_label,
-                source_platform=evidence.get("source_platform", source_type),
-                source_provenance=response_evidence.get("source_provenance"),
-                source_lineage=response_evidence.get("source_lineage", response_evidence.get("source_platform", source_type)),
-                discovery_source=response_evidence.get("discovery_source"),
-                saved=saved,
-                applied=applied,
-                current_status=current_status,
-                date_saved=_ensure_utc_datetime(application.date_saved) if application else None,
-                date_applied=_ensure_utc_datetime(application.date_applied) if application else None,
-                application_notes=application.notes if application else None,
-                application_updated_at=_ensure_utc_datetime(application.updated_at) if application else None,
-                next_action=next_action,
-                follow_up_due=follow_up_due,
-                explanation=lead.explanation,
-                last_agent_action=lead.last_agent_action,
-                hidden=not decision["visible"],
-                score_breakdown_json=lead.score_breakdown_json or {},
-                evidence_json=response_evidence,
-            )
-        )
-        serialization_ms += (perf_counter() - serialization_started) * 1000
-    logger.info(
-        "[READTIME_CRITIC_DROPS] %s",
-        {
-            "total_considered": total_considered,
-            "total_returned": len(items),
-            "omitted_by_status": dict(omitted_by_status),
-            "omitted_by_category": dict(omitted_by_category),
-        },
-    )
-    total_ms = round((perf_counter() - started_at) * 1000, 2)
-    logger.info(
-        "[LEADS_TIMING] %s",
-        {
-            "db_fetch_ms": db_fetch_ms,
-            "critic_filter_ms": round(critic_filter_ms, 2),
-            "serialization_ms": round(serialization_ms, 2),
-            "total_ms": total_ms,
-            "records_considered": total_considered,
-            "records_returned": len(items),
-        },
-    )
     rank_order = {"strong": 0, "medium": 1, "weak": 2}
     freshness_order = {"fresh": 0, "recent": 1, "stale": 2, "unknown": 3}
     lead_type_order = {"combined": 0, "listing": 1, "signal": 2}
@@ -1800,16 +1651,292 @@ def list_leads(
         reference = item.posted_at or item.surfaced_at
         return -reference.timestamp() if reference else 0.0
 
-    return sorted(
-        items,
-        key=lambda item: (
-            rank_order.get(item.rank_label, 3),
-            lead_type_order.get(item.lead_type, 3),
-            freshness_order.get(item.freshness_label, 4),
-            recency_value(item),
-            item.company_name.lower(),
-        ),
+    logger.info(
+        "[LEADS_REQUEST_START] %s",
+        {
+            "freshness_window_days": freshness_window_days,
+            "include_hidden": include_hidden,
+            "include_unqualified": include_unqualified,
+            "include_signal_only": include_signal_only,
+            "only_saved": only_saved,
+            "only_applied": only_applied,
+        },
     )
+
+    def _log_stage_timing(stage: str, stage_started_at: float, rows_seen: int) -> None:
+        logger.info(
+            "[LEADS_STAGE_TIMING] %s",
+            {
+                "stage": stage,
+                "elapsed_ms": round((perf_counter() - stage_started_at) * 1000, 2),
+                "rows_seen": rows_seen,
+            },
+        )
+
+    db_fetch_ms = 0.0
+    critic_filter_ms = 0.0
+    serialization_ms = 0.0
+    total_considered = 0
+    items: list[LeadResponse] = []
+    omitted_by_status: Counter[str] = Counter()
+    omitted_by_category: Counter[str] = Counter()
+    location_cache: dict[tuple, dict] = {}
+    location_gate_stats = {"total_calls": 0, "cache_hits": 0, "cache_misses": 0}
+    location_log_state = {"seen": set(), "emitted_count": 0, "suppressed_duplicate_count": 0}
+    critic_stage_started_at: Optional[float] = None
+    serialization_stage_started_at: Optional[float] = None
+
+    try:
+        db_started_at = perf_counter()
+        records = session.scalars(select(Lead).order_by(Lead.surfaced_at.desc(), Lead.rank_label.asc())).all()
+        lead_ids = [lead.id for lead in records]
+        listing_ids = [lead.listing_id for lead in records if lead.listing_id]
+        applications = (
+            session.scalars(select(Application).where(Application.lead_id.in_(lead_ids))).all()
+            if lead_ids
+            else []
+        )
+        application_ids = [application.id for application in applications]
+        follow_up_tasks = (
+            session.scalars(
+                select(FollowUpTask)
+                .where(FollowUpTask.application_id.in_(application_ids), FollowUpTask.status == "open")
+                .order_by(FollowUpTask.application_id.asc(), FollowUpTask.due_at.asc())
+            ).all()
+            if application_ids
+            else []
+        )
+        listing_cache = {
+            listing.id: listing
+            for listing in (
+                session.scalars(select(Listing).where(Listing.id.in_(listing_ids))).all()
+                if listing_ids
+                else []
+            )
+        }
+        profile = get_candidate_profile(session)
+        application_by_lead_id = {application.lead_id: application for application in applications}
+        follow_up_by_application_id: dict[int, FollowUpTask] = {}
+        for task in follow_up_tasks:
+            follow_up_by_application_id.setdefault(task.application_id, task)
+        db_fetch_ms = round((perf_counter() - db_started_at) * 1000, 2)
+        _log_stage_timing("db_fetch", db_started_at, len(records))
+
+        prefilter_started_at = perf_counter()
+        candidate_records: list[Lead] = []
+        for lead in records:
+            application = application_by_lead_id.get(lead.id)
+            saved = application is not None and application.date_saved is not None
+            applied = application is not None and application.date_applied is not None
+            current_status = application.current_status if application else None
+
+            if only_saved and not saved:
+                continue
+            if only_applied and not applied:
+                continue
+            if status and current_status != status:
+                continue
+            if lead_type and lead.lead_type != lead_type:
+                omitted_by_status["lead_type_filtered"] += 1
+                continue
+            if lead.lead_type == "signal" and lead_type != "signal" and not include_signal_only:
+                omitted_by_status["signal_only_filtered"] += 1
+                continue
+            candidate_records.append(lead)
+        _log_stage_timing("cheap_prefilter", prefilter_started_at, len(candidate_records))
+
+        duplicate_started_at = perf_counter()
+        duplicate_losers = _duplicate_winner_context(session, candidate_records, listing_cache=listing_cache)
+        _log_stage_timing("duplicate_detection", duplicate_started_at, len(candidate_records))
+
+        def _evaluate_location_policy(lead: Lead, location: Optional[str]) -> dict:
+            cache_key = (
+                lead.company_name.strip().lower(),
+                lead.primary_title.strip().lower(),
+                (location or "").strip().lower(),
+            )
+            location_gate_stats["total_calls"] += 1
+            if cache_key in location_cache:
+                location_gate_stats["cache_hits"] += 1
+                return location_cache[cache_key]
+            location_gate_stats["cache_misses"] += 1
+            location_cache[cache_key] = is_location_allowed_for_profile(profile, location, settings=get_settings())
+            return location_cache[cache_key]
+
+        critic_stage_started_at = perf_counter()
+        for lead in candidate_records:
+            total_considered += 1
+            critic_started = perf_counter()
+            evidence = lead.evidence_json or {}
+            decision = evaluate_critic_decision(
+                session=session,
+                lead=lead,
+                profile=profile,
+                freshness_window_days=freshness_window_days,
+                duplicate_losers=duplicate_losers,
+                listing_cache=listing_cache,
+                location_policy_evaluator=_evaluate_location_policy,
+                location_log_state=location_log_state,
+            )
+            authoritative_listing = decision.get("listing")
+            freshness_days = decision["freshness_days"]
+            freshness_hours = decision["freshness_hours"]
+            listing_status = decision["listing_status"]
+            source_type = evidence.get("source_type", lead.lead_type)
+            application = application_by_lead_id.get(lead.id)
+            saved = application is not None and application.date_saved is not None
+            applied = application is not None and application.date_applied is not None
+            current_status = application.current_status if application else None
+
+            if not include_hidden and not decision["visible"]:
+                if lead.lead_type == "signal" and include_signal_only and decision["status"] in {"uncertain", "investigation"}:
+                    pass
+                elif include_unqualified and decision["suppression_category"] == "qualification":
+                    pass
+                else:
+                    omitted_by_status[decision["status"]] += 1
+                    omitted_by_category[decision["suppression_category"]] += 1
+                    critic_filter_ms += (perf_counter() - critic_started) * 1000
+                    continue
+            if freshness_window_days is not None and freshness_hours is not None and freshness_hours > freshness_window_days * 24:
+                omitted_by_status["freshness_window_filtered"] += 1
+                omitted_by_category["stale"] += 1
+                critic_filter_ms += (perf_counter() - critic_started) * 1000
+                continue
+            if application:
+                follow_up_task = follow_up_by_application_id.get(application.id)
+                next_action = follow_up_task.notes or "Follow up on this application." if follow_up_task else None
+                follow_up_due = bool(follow_up_task and follow_up_task.due_at <= datetime.utcnow())
+            else:
+                next_action, follow_up_due = None, False
+            critic_filter_ms += (perf_counter() - critic_started) * 1000
+
+            if serialization_stage_started_at is None:
+                serialization_stage_started_at = perf_counter()
+            serialization_started = perf_counter()
+            response_evidence = dict(evidence)
+            listing_metadata = dict((authoritative_listing.metadata_json or {})) if authoritative_listing else {}
+            response_evidence["discovery_source"] = response_evidence.get("discovery_source") or listing_metadata.get("discovery_source")
+            response_evidence["source_provenance"] = response_evidence.get("source_provenance") or listing_metadata.get("surface_provenance")
+            response_evidence["source_lineage"] = response_evidence.get("source_lineage") or listing_metadata.get("source_lineage") or response_evidence.get("source_platform")
+            response_evidence["critic_status"] = decision["status"]
+            response_evidence["critic_reasons"] = decision["reasons"]
+            response_evidence["suppression_reason"] = "; ".join(decision["reasons"]) if decision["status"] != "visible" else None
+            response_evidence["suppression_category"] = decision["suppression_category"]
+            response_evidence["liveness_evidence"] = decision["liveness_evidence"]
+            response_evidence["listing_status"] = listing_status
+            response_evidence["freshness_hours"] = freshness_hours
+            response_evidence["freshness_days"] = freshness_days
+            response_evidence["url"] = decision["authoritative_url"]
+            response_evidence["posted_at"] = _isoformat_utc(decision["posted_at"])
+            response_evidence["first_published_at"] = _isoformat_utc(decision["first_published_at"])
+            response_evidence["discovered_at"] = _isoformat_utc(decision["discovered_at"])
+            response_evidence["last_seen_at"] = _isoformat_utc(decision["last_seen_at"])
+            response_evidence["updated_at"] = _isoformat_utc(decision["updated_at"])
+
+            items.append(
+                LeadResponse(
+                    id=lead.id,
+                    lead_type=lead.lead_type,
+                    company_name=lead.company_name,
+                    primary_title=lead.primary_title,
+                    url=decision["authoritative_url"],
+                    source_type=source_type,
+                    listing_status=listing_status,
+                    first_published_at=_ensure_utc_datetime(decision["first_published_at"]),
+                    discovered_at=_ensure_utc_datetime(decision["discovered_at"]),
+                    last_seen_at=_ensure_utc_datetime(decision["last_seen_at"]),
+                    updated_at=_ensure_utc_datetime(decision["updated_at"] or lead.updated_at),
+                    freshness_hours=freshness_hours,
+                    freshness_days=freshness_days,
+                    posted_at=_ensure_utc_datetime(decision["posted_at"]),
+                    surfaced_at=_ensure_utc_datetime(lead.surfaced_at),
+                    rank_label=lead.rank_label,
+                    confidence_label=lead.confidence_label,
+                    freshness_label=lead.freshness_label,
+                    title_fit_label=lead.title_fit_label,
+                    qualification_fit_label=lead.qualification_fit_label,
+                    source_platform=evidence.get("source_platform", source_type),
+                    source_provenance=response_evidence.get("source_provenance"),
+                    source_lineage=response_evidence.get("source_lineage", response_evidence.get("source_platform", source_type)),
+                    discovery_source=response_evidence.get("discovery_source"),
+                    saved=saved,
+                    applied=applied,
+                    current_status=current_status,
+                    date_saved=_ensure_utc_datetime(application.date_saved) if application else None,
+                    date_applied=_ensure_utc_datetime(application.date_applied) if application else None,
+                    application_notes=application.notes if application else None,
+                    application_updated_at=_ensure_utc_datetime(application.updated_at) if application else None,
+                    next_action=next_action,
+                    follow_up_due=follow_up_due,
+                    explanation=lead.explanation,
+                    last_agent_action=lead.last_agent_action,
+                    hidden=not decision["visible"],
+                    score_breakdown_json=lead.score_breakdown_json or {},
+                    evidence_json=response_evidence,
+                )
+            )
+            serialization_ms += (perf_counter() - serialization_started) * 1000
+        if critic_stage_started_at is not None:
+            _log_stage_timing("critic_filter", critic_stage_started_at, total_considered)
+        if serialization_stage_started_at is not None:
+            _log_stage_timing("serialization", serialization_stage_started_at, len(items))
+        logger.info(
+            "[READTIME_CRITIC_DROPS] %s",
+            {
+                "total_considered": total_considered,
+                "total_returned": len(items),
+                "omitted_by_status": dict(omitted_by_status),
+                "omitted_by_category": dict(omitted_by_category),
+            },
+        )
+        return sorted(
+            items,
+            key=lambda item: (
+                rank_order.get(item.rank_label, 3),
+                lead_type_order.get(item.lead_type, 3),
+                freshness_order.get(item.freshness_label, 4),
+                recency_value(item),
+                item.company_name.lower(),
+            ),
+        )
+    finally:
+        if critic_stage_started_at is not None and total_considered == 0:
+            _log_stage_timing("critic_filter", critic_stage_started_at, total_considered)
+        if serialization_stage_started_at is not None and not items:
+            _log_stage_timing("serialization", serialization_stage_started_at, len(items))
+        logger.info(
+            "[LOCATION_GATE_CACHE] %s",
+            {
+                "total_calls": location_gate_stats["total_calls"],
+                "unique_keys": len(location_cache),
+                "cache_hits": location_gate_stats["cache_hits"],
+                "cache_misses": location_gate_stats["cache_misses"],
+            },
+        )
+        logger.info(
+            "[LOCATION_GATE_DEDUPED] %s",
+            {
+                "emitted_count": location_log_state["emitted_count"],
+                "suppressed_duplicate_count": location_log_state["suppressed_duplicate_count"],
+            },
+        )
+        total_ms = round((perf_counter() - started_at) * 1000, 2)
+        logger.info(
+            "[LEADS_TIMING] %s",
+            {
+                "db_fetch_ms": db_fetch_ms,
+                "critic_filter_ms": round(critic_filter_ms, 2),
+                "serialization_ms": round(serialization_ms, 2),
+                "total_ms": total_ms,
+                "records_considered": total_considered,
+                "records_returned": len(items),
+                "location_gate_calls": location_gate_stats["total_calls"],
+                "unique_location_gate_keys": len(location_cache),
+            },
+        )
+
+    return []
 
 
 def get_stats(session: Session) -> StatsResponse:
