@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from functools import partial
+from time import perf_counter
 from collections import defaultdict
 from collections import Counter
 from typing import Optional
@@ -23,13 +24,14 @@ from core.schemas import ListingRecord, LeadResponse, SignalRecord, StatsRespons
 from services.activity import append_lead_agent_trace, log_agent_activity, log_agent_run
 from services.ai_judges import judge_critic_with_ai, judge_fit_with_ai
 from services.company_discovery import (
-    classify_surface_provenance,
     build_query_inputs,
     candidate_from_search_result,
-    source_lineage_for_surface,
+    classify_surface_provenance,
+    inspect_search_result_candidate,
     normalize_company_key,
     record_expansion_attempt,
     select_candidates_for_expansion,
+    source_lineage_for_surface,
     summarize_source_mix,
     triage_candidate,
     upsert_discovered_company,
@@ -173,9 +175,11 @@ def _matching_listing_for_signal(listings: list[Listing], signal: Signal) -> Opt
     return None
 
 
-def _authoritative_listing_context(session: Session, lead: Lead) -> dict:
+def _authoritative_listing_context(session: Session, lead: Lead, listing_cache: Optional[dict[int, Listing]] = None) -> dict:
     evidence = dict(lead.evidence_json or {})
-    listing = session.get(Listing, lead.listing_id) if lead.listing_id else None
+    listing = (listing_cache or {}).get(lead.listing_id) if lead.listing_id and listing_cache else None
+    if listing is None and lead.listing_id:
+        listing = session.get(Listing, lead.listing_id)
     page_text = ""
     http_status = None
     metadata = {}
@@ -207,13 +211,13 @@ def _authoritative_listing_context(session: Session, lead: Lead) -> dict:
     }
 
 
-def _duplicate_winner_context(session: Session, leads: list[Lead]) -> dict[int, str]:
+def _duplicate_winner_context(session: Session, leads: list[Lead], listing_cache: Optional[dict[int, Listing]] = None) -> dict[int, str]:
     freshness_order = {"fresh": 0, "recent": 1, "stale": 2, "unknown": 3}
     lead_type_order = {"combined": 0, "listing": 1, "signal": 2}
     duplicate_groups: dict[tuple, list[Lead]] = defaultdict(list)
 
     for lead in leads:
-        context = _authoritative_listing_context(session, lead)
+        context = _authoritative_listing_context(session, lead, listing_cache=listing_cache)
         dedupe_key = (
             lead.listing_id or None,
             (context["url"] or "").lower(),
@@ -247,9 +251,10 @@ def evaluate_critic_decision(
     profile,
     freshness_window_days: Optional[int] = 14,
     duplicate_losers: Optional[dict[int, str]] = None,
+    listing_cache: Optional[dict[int, Listing]] = None,
 ) -> dict:
     duplicate_losers = duplicate_losers or {}
-    context = _authoritative_listing_context(session, lead)
+    context = _authoritative_listing_context(session, lead, listing_cache=listing_cache)
     url = context["url"]
     listing_status = context["listing_status"]
     freshness_days = context["freshness_days"]
@@ -792,10 +797,49 @@ def sync_all(
             },
         )
         candidate_rows_by_key: dict[str, tuple] = {}
+        dropped_results: list[dict[str, str]] = []
+        convertible_candidate_count = 0
+        logger.info(
+            "[DISCOVERY_ACCEPTED_RESULTS] %s",
+            {
+                "accepted_results_input_count": len(search_results),
+                "accepted_urls": [result.url for result in search_results[:10]],
+            },
+        )
         for result in search_results:
+            inspection = inspect_search_result_candidate(result)
             candidate = candidate_from_search_result(result)
             if not candidate:
+                dropped_results.append(
+                    {
+                        "url": inspection["normalized_url"] or result.url,
+                        "reason": inspection["reason"] or "candidate_none",
+                    }
+                )
+                logger.info(
+                    "[DISCOVERY_CANDIDATE_DROP] %s",
+                    {
+                        "url": inspection["normalized_url"] or result.url,
+                        "host": inspection["host"],
+                        "path": inspection["path"],
+                        "reason": inspection["reason"] or "candidate_none",
+                        "board_type": inspection["board_type"],
+                        "board_locator": inspection["board_locator"],
+                    },
+                )
                 continue
+            convertible_candidate_count += 1
+            logger.info(
+                "[DISCOVERY_CANDIDATE_CONVERSION] %s",
+                {
+                    "url": candidate.result_url,
+                    "host": inspection["host"],
+                    "path": inspection["path"],
+                    "board_type": candidate.board_type,
+                    "board_locator": candidate.board_locator,
+                    "reason": "converted",
+                },
+            )
             extraction = extraction_by_url.get(result.url)
             if extraction:
                 if extraction.company_name:
@@ -900,6 +944,11 @@ def sync_all(
                     )
                 candidate_rows_by_key[candidate.discovery_key] = (candidate, row, triage_score, triage_reasons)
         candidate_rows = list(candidate_rows_by_key.values())
+        cycle_metrics["accepted_results_input_count"] = len(search_results)
+        cycle_metrics["convertible_candidate_count"] = convertible_candidate_count
+        cycle_metrics["dropped_result_count"] = max(len(search_results) - convertible_candidate_count, 0)
+        cycle_metrics["accepted_urls_sample"] = [result.url for result in search_results[:10]]
+        cycle_metrics["dropped_urls_sample"] = [item["url"] for item in dropped_results[:10]]
         selected_discoveries = select_candidates_for_expansion(candidate_rows, settings=settings)
         selected_discovery_rows_by_key = {row.discovery_key: row for _, row, _, _ in selected_discoveries}
         for candidate, row, score, reasons in selected_discoveries:
@@ -1551,15 +1600,36 @@ def list_leads(
     status: Optional[str] = None,
     include_signal_only: bool = False,
 ) -> list[LeadResponse]:
+    started_at = perf_counter()
     records = session.scalars(select(Lead).order_by(Lead.surfaced_at.desc(), Lead.rank_label.asc())).all()
+    lead_ids = [lead.id for lead in records]
+    listing_ids = [lead.listing_id for lead in records if lead.listing_id]
+    applications = (
+        session.scalars(select(Application).where(Application.lead_id.in_(lead_ids))).all()
+        if lead_ids
+        else []
+    )
+    listing_cache = {
+        listing.id: listing
+        for listing in (
+            session.scalars(select(Listing).where(Listing.id.in_(listing_ids))).all()
+            if listing_ids
+            else []
+        )
+    }
     profile = get_candidate_profile(session)
-    duplicate_losers = _duplicate_winner_context(session, records)
+    duplicate_losers = _duplicate_winner_context(session, records, listing_cache=listing_cache)
+    db_fetch_ms = round((perf_counter() - started_at) * 1000, 2)
+    application_by_lead_id = {application.lead_id: application for application in applications}
     items: list[LeadResponse] = []
     omitted_by_status: Counter[str] = Counter()
     omitted_by_category: Counter[str] = Counter()
     total_considered = 0
+    critic_filter_ms = 0.0
+    serialization_ms = 0.0
     for lead in records:
         total_considered += 1
+        critic_started = perf_counter()
         evidence = lead.evidence_json or {}
         decision = evaluate_critic_decision(
             session=session,
@@ -1567,31 +1637,36 @@ def list_leads(
             profile=profile,
             freshness_window_days=freshness_window_days,
             duplicate_losers=duplicate_losers,
+            listing_cache=listing_cache,
         )
-        authoritative = _authoritative_listing_context(session, lead)
+        authoritative = _authoritative_listing_context(session, lead, listing_cache=listing_cache)
         authoritative_listing = authoritative.get("listing")
         freshness_days = decision["freshness_days"]
         freshness_hours = decision["freshness_hours"]
         listing_status = decision["listing_status"]
         source_type = evidence.get("source_type", lead.lead_type)
-        application = session.scalar(select(Application).where(Application.lead_id == lead.id))
+        application = application_by_lead_id.get(lead.id)
         saved = application is not None and application.date_saved is not None
         applied = application is not None and application.date_applied is not None
         current_status = application.current_status if application else None
-        next_action, follow_up_due = next_action_for_application(session, application.id) if application else (None, False)
 
         if only_saved and not saved:
+            critic_filter_ms += (perf_counter() - critic_started) * 1000
             continue
         if only_applied and not applied:
+            critic_filter_ms += (perf_counter() - critic_started) * 1000
             continue
         if status and current_status != status:
+            critic_filter_ms += (perf_counter() - critic_started) * 1000
             continue
 
         if lead_type and lead.lead_type != lead_type:
             omitted_by_status["lead_type_filtered"] += 1
+            critic_filter_ms += (perf_counter() - critic_started) * 1000
             continue
         if lead.lead_type == "signal" and lead_type != "signal" and not include_signal_only:
             omitted_by_status["signal_only_filtered"] += 1
+            critic_filter_ms += (perf_counter() - critic_started) * 1000
             continue
         if not include_hidden and not decision["visible"]:
             if lead.lead_type == "signal" and include_signal_only and decision["status"] in {"uncertain", "investigation"}:
@@ -1601,12 +1676,17 @@ def list_leads(
             else:
                 omitted_by_status[decision["status"]] += 1
                 omitted_by_category[decision["suppression_category"]] += 1
+                critic_filter_ms += (perf_counter() - critic_started) * 1000
                 continue
         if freshness_window_days is not None and freshness_hours is not None and freshness_hours > freshness_window_days * 24:
             omitted_by_status["freshness_window_filtered"] += 1
             omitted_by_category["stale"] += 1
+            critic_filter_ms += (perf_counter() - critic_started) * 1000
             continue
+        next_action, follow_up_due = next_action_for_application(session, application.id) if application else (None, False)
+        critic_filter_ms += (perf_counter() - critic_started) * 1000
 
+        serialization_started = perf_counter()
         response_evidence = dict(evidence)
         listing_metadata = dict((authoritative_listing.metadata_json or {})) if authoritative_listing else {}
         response_evidence["discovery_source"] = response_evidence.get("discovery_source") or listing_metadata.get("discovery_source")
@@ -1669,6 +1749,7 @@ def list_leads(
                 evidence_json=response_evidence,
             )
         )
+        serialization_ms += (perf_counter() - serialization_started) * 1000
     logger.info(
         "[READTIME_CRITIC_DROPS] %s",
         {
@@ -1676,6 +1757,18 @@ def list_leads(
             "total_returned": len(items),
             "omitted_by_status": dict(omitted_by_status),
             "omitted_by_category": dict(omitted_by_category),
+        },
+    )
+    total_ms = round((perf_counter() - started_at) * 1000, 2)
+    logger.info(
+        "[LEADS_TIMING] %s",
+        {
+            "db_fetch_ms": db_fetch_ms,
+            "critic_filter_ms": round(critic_filter_ms, 2),
+            "serialization_ms": round(serialization_ms, 2),
+            "total_ms": total_ms,
+            "records_considered": total_considered,
+            "records_returned": len(items),
         },
     )
     rank_order = {"strong": 0, "medium": 1, "weak": 2}

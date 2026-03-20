@@ -12,6 +12,7 @@ from services.company_discovery import (
     build_discovery_status,
     candidate_from_search_result,
     classify_surface_provenance,
+    inspect_search_result_candidate,
     record_expansion_attempt,
     select_candidates_for_expansion,
     source_lineage_for_surface,
@@ -59,6 +60,39 @@ def test_company_discovery_dedupes_by_board_locator() -> None:
     assert created1 is True
     assert created2 is False
     assert row1.id == row2.id
+
+
+def test_candidate_conversion_handles_hosted_board_roots_and_redirects() -> None:
+    greenhouse_root = SearchDiscoveryResult(
+        query_text="acme greenhouse",
+        title="Acme Greenhouse",
+        url="https://job-boards.greenhouse.io/acme",
+    )
+    ashby_root = SearchDiscoveryResult(
+        query_text="acme ashby",
+        title="Acme Ashby",
+        url="https://jobs.ashbyhq.com/acme",
+    )
+    ddg_redirect = SearchDiscoveryResult(
+        query_text="acme greenhouse",
+        title="redirect",
+        url="https://duckduckgo.com/l/?uddg=https%3A%2F%2Fboards.greenhouse.io%2Facme%2Fjobs%2F1",
+    )
+
+    greenhouse_candidate = candidate_from_search_result(greenhouse_root)
+    ashby_candidate = candidate_from_search_result(ashby_root)
+    redirect_candidate = candidate_from_search_result(ddg_redirect)
+    inspection = inspect_search_result_candidate(ddg_redirect)
+
+    assert greenhouse_candidate is not None
+    assert greenhouse_candidate.board_type == "greenhouse"
+    assert greenhouse_candidate.board_locator == "acme"
+    assert ashby_candidate is not None
+    assert ashby_candidate.board_type == "ashby"
+    assert ashby_candidate.board_locator == "acme"
+    assert redirect_candidate is not None
+    assert redirect_candidate.result_url == "https://boards.greenhouse.io/acme/jobs/1"
+    assert inspection["normalized_url"] == "https://boards.greenhouse.io/acme/jobs/1"
 
 
 def test_surface_provenance_classifies_preseeded_and_discovered() -> None:
@@ -188,6 +222,8 @@ def test_discovery_status_returns_recent_items() -> None:
                 "cycle_metrics": {
                     "discovered_companies_new_count": 2,
                     "agent_discovered_visible_leads_count": 1,
+                    "accepted_urls_sample": ["https://job-boards.greenhouse.io/example"],
+                    "dropped_urls_sample": ["https://linkedin.com/jobs/1"],
                 }
             },
         )
@@ -210,4 +246,5 @@ def test_discovery_status_returns_recent_items() -> None:
     assert any(item["identifier"] == ashby_row.board_locator for item in status.recent_ashby_identifiers)
     assert status.latest_openai_usage == {"planner": True, "triage": False, "learning": True}
     assert status.cycle_metrics["discovered_companies_new_count"] == 2
+    assert status.cycle_metrics["accepted_urls_sample"] == ["https://job-boards.greenhouse.io/example"]
     assert status.recent_successful_expansions

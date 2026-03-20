@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 import re
 from typing import Optional
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -68,25 +68,61 @@ def _company_name_from_locator(locator: str) -> str:
     return locator.replace("-", " ").replace("_", " ").title()
 
 
-def candidate_from_search_result(result: SearchDiscoveryResult) -> CompanyDiscoveryCandidate | None:
-    parsed = urlparse(result.url)
+def _normalize_result_url(url: str) -> str:
+    parsed = urlparse(url)
+    if parsed.netloc.endswith("duckduckgo.com") and parsed.path.startswith("/l/"):
+        uddg = parse_qs(parsed.query).get("uddg", [])
+        if uddg:
+            return unquote(uddg[0])
+    return url
+
+
+def inspect_search_result_candidate(result: SearchDiscoveryResult) -> dict[str, Optional[str]]:
+    normalized_url = _normalize_result_url(result.url)
+    parsed = urlparse(normalized_url)
     host = parsed.netloc.lower()
     path_parts = [part for part in parsed.path.split("/") if part]
     board_type = None
     board_locator = None
-    if "greenhouse.io" in host and len(path_parts) >= 2:
+    reason = None
+
+    if not parsed.scheme or not host:
+        reason = "missing_host"
+    elif parsed.scheme not in {"http", "https"}:
+        reason = "non_http_url"
+    elif ("job-boards.greenhouse.io" in host or "boards.greenhouse.io" in host) and len(path_parts) >= 1:
         board_type = "greenhouse"
         board_locator = path_parts[0]
     elif "jobs.ashbyhq.com" in host and path_parts:
         board_type = "ashby"
         board_locator = path_parts[0]
-    elif any(token in parsed.path.lower() for token in ["/careers", "/jobs", "/join-us", "/work-with-us"]):
+    elif host.startswith("careers.") or any(token in parsed.path.lower() for token in ["/careers", "/jobs", "/join-us", "/work-with-us", "/open-roles", "/join", "/company/careers"]):
         board_type = "careers_page"
         board_locator = host
+    else:
+        reason = "unsupported_surface"
+
+    if board_type and not board_locator:
+        reason = "missing_board_locator"
+
+    return {
+        "normalized_url": normalized_url,
+        "host": host,
+        "path": parsed.path,
+        "board_type": board_type,
+        "board_locator": board_locator,
+        "reason": reason,
+    }
+
+
+def candidate_from_search_result(result: SearchDiscoveryResult) -> CompanyDiscoveryCandidate | None:
+    inspection = inspect_search_result_candidate(result)
+    board_type = inspection["board_type"]
+    board_locator = inspection["board_locator"]
     if not board_type or not board_locator:
         return None
     company_name = _company_name_from_locator(board_locator.split(".")[0] if board_type == "careers_page" else board_locator)
-    company_domain = host if board_type == "careers_page" else None
+    company_domain = inspection["host"] if board_type == "careers_page" else None
     return CompanyDiscoveryCandidate(
         company_name=company_name,
         company_domain=company_domain,
@@ -95,7 +131,7 @@ def candidate_from_search_result(result: SearchDiscoveryResult) -> CompanyDiscov
         discovery_query=result.query_text,
         board_type=board_type,
         board_locator=board_locator,
-        result_url=result.url,
+        result_url=inspection["normalized_url"] or result.url,
         result_title=result.title,
     )
 

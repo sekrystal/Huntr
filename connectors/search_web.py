@@ -142,6 +142,23 @@ class SearchDiscoveryConnector:
                     "accepted_result_count": len(query_results),
                 },
             )
+            if diagnostics.get("accepted_urls"):
+                logger.info(
+                    "[SEARCH_PROVIDER_ACCEPTED_URLS] %s",
+                    {
+                        "query": query_text,
+                        "accepted_urls": diagnostics["accepted_urls"][:10],
+                    },
+                )
+            if diagnostics.get("rejected_urls"):
+                logger.info(
+                    "[SEARCH_PROVIDER_REJECTED_URLS] %s",
+                    {
+                        "query": query_text,
+                        "rejected_urls": diagnostics["rejected_urls"][:10],
+                        "rejected_reasons": diagnostics["rejected_reasons"][:10],
+                    },
+                )
             if not query_results:
                 zero_yield = {
                     "query": query_text,
@@ -186,20 +203,33 @@ def _extract_result_url(href: str) -> str | None:
 
 
 def _is_supported_job_surface(url: str) -> bool:
+    return _surface_acceptance_reason(url) == "accepted"
+
+
+def _surface_acceptance_reason(url: str) -> str:
     parsed = urlparse(url)
     host = parsed.netloc.lower()
     path = parsed.path.lower()
+    if not parsed.scheme or not host:
+        return "missing_host"
+    if parsed.scheme not in {"http", "https"}:
+        return "non_http_url"
     if any(blocked in host for blocked in BLOCKED_AGGREGATOR_HOSTS):
-        return False
-    if "greenhouse.io" in host and "/jobs/" in path:
-        return True
-    if "ashbyhq.com" in host and path.count("/") >= 2:
-        return True
+        return "aggregator_blocked"
+    path_parts = [part for part in path.split("/") if part]
+    if "job-boards.greenhouse.io" in host or "boards.greenhouse.io" in host:
+        if len(path_parts) >= 1:
+            return "accepted"
+        return "unsupported_surface"
+    if "jobs.ashbyhq.com" in host:
+        if len(path_parts) >= 1:
+            return "accepted"
+        return "unsupported_surface"
     if host.startswith("careers."):
-        return True
+        return "accepted"
     if any(token in path for token in ["/careers", "/jobs", "/join-us", "/work-with-us", "/open-roles", "/join", "/company/careers"]):
-        return True
-    return False
+        return "accepted"
+    return "unsupported_surface"
 
 
 def _extract_fallback_anchor_candidates(html: str) -> list[str]:
@@ -227,29 +257,72 @@ def _parse_search_results_from_html(
     result_limit: int,
 ) -> tuple[list[SearchDiscoveryResult], dict[str, str]]:
     accepted: list[SearchDiscoveryResult] = []
+    accepted_urls: list[str] = []
+    rejected_urls: list[str] = []
+    rejected_reasons: list[str] = []
     for match in RESULT_LINK_RE.finditer(html):
         href = _extract_result_url(match.group("href"))
         title = _clean_html(match.group("title"))
-        if not href or href in seen_urls or not _is_supported_job_surface(href):
+        reason = _surface_acceptance_reason(href) if href else "missing_host"
+        if not href or href in seen_urls or reason != "accepted":
+            if href and href not in seen_urls:
+                rejected_urls.append(href)
+                rejected_reasons.append(reason)
             continue
         accepted.append(SearchDiscoveryResult(query_text=query_text, title=title or _fallback_title_from_url(href), url=href))
+        accepted_urls.append(href)
         if len(accepted) >= result_limit:
-            return accepted, {"reason": "strict matches accepted"}
+            return accepted, {
+                "reason": "strict matches accepted",
+                "accepted_urls": accepted_urls,
+                "rejected_urls": rejected_urls,
+                "rejected_reasons": rejected_reasons,
+            }
 
     for href in _extract_fallback_anchor_candidates(html):
-        if href in seen_urls or not _is_supported_job_surface(href):
+        reason = _surface_acceptance_reason(href)
+        if href in seen_urls or reason != "accepted":
+            if href not in seen_urls:
+                rejected_urls.append(href)
+                rejected_reasons.append(reason)
             continue
         accepted.append(SearchDiscoveryResult(query_text=query_text, title=_fallback_title_from_url(href), url=href))
+        accepted_urls.append(href)
         if len(accepted) >= result_limit:
-            return accepted, {"reason": "fallback anchors accepted"}
+            return accepted, {
+                "reason": "fallback anchors accepted",
+                "accepted_urls": accepted_urls,
+                "rejected_urls": rejected_urls,
+                "rejected_reasons": rejected_reasons,
+            }
     if accepted:
-        return accepted, {"reason": "fallback anchors accepted"}
+        return accepted, {
+            "reason": "fallback anchors accepted",
+            "accepted_urls": accepted_urls,
+            "rejected_urls": rejected_urls,
+            "rejected_reasons": rejected_reasons,
+        }
 
     if RESULT_LINK_RE.search(html):
-        return accepted, {"reason": "strict matches found but none were accepted"}
+        return accepted, {
+            "reason": "strict matches found but none were accepted",
+            "accepted_urls": accepted_urls,
+            "rejected_urls": rejected_urls,
+            "rejected_reasons": rejected_reasons,
+        }
     if _extract_fallback_anchor_candidates(html):
-        return accepted, {"reason": "fallback anchors found but none were accepted"}
-    return accepted, {"reason": "no parseable anchors detected"}
+        return accepted, {
+            "reason": "fallback anchors found but none were accepted",
+            "accepted_urls": accepted_urls,
+            "rejected_urls": rejected_urls,
+            "rejected_reasons": rejected_reasons,
+        }
+    return accepted, {
+        "reason": "no parseable anchors detected",
+        "accepted_urls": accepted_urls,
+        "rejected_urls": rejected_urls,
+        "rejected_reasons": rejected_reasons,
+    }
 
 
 def fetch_page_snapshot(url: str, timeout: tuple[int, int] = (5, 15)) -> tuple[str, str]:

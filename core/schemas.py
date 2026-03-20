@@ -349,7 +349,7 @@ class DiscoveryStatusResponse(BaseModel):
     recent_agentic_leads: list[dict[str, Any]] = Field(default_factory=list)
     next_recommended_queries: list[str] = Field(default_factory=list)
     latest_openai_usage: dict[str, bool] = Field(default_factory=dict)
-    cycle_metrics: dict[str, int] = Field(default_factory=dict)
+    cycle_metrics: dict[str, Any] = Field(default_factory=dict)
     recent_successful_expansions: list[dict[str, Any]] = Field(default_factory=list)
 
 
