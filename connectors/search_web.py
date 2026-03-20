@@ -13,6 +13,11 @@ from core.logging import get_logger
 
 
 logger = get_logger(__name__)
+BROWSER_USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/123.0.0.0 Safari/537.36"
+)
 RESULT_LINK_RE = re.compile(
     r'<a[^>]+class="result__a"[^>]+href="(?P<href>[^"]+)"[^>]*>(?P<title>.*?)</a>',
     re.IGNORECASE | re.DOTALL,
@@ -40,6 +45,15 @@ COMPANY_NAME_RE = re.compile(
     r"<meta[^>]+property=[\"']og:site_name[\"'][^>]+content=[\"'](?P<name>[^\"']+)[\"']",
     re.IGNORECASE,
 )
+DDG_ZERO_YIELD_MARKERS = [
+    "detected unusual traffic",
+    "automated requests",
+    "verify you are human",
+    "captcha",
+    "anomaly detected",
+    "unusual activity",
+]
+BLOCKED_AGGREGATOR_HOSTS = ["linkedin.com", "indeed.com", "glassdoor.com", "ziprecruiter.com", "wellfound.com"]
 
 
 @dataclass
@@ -89,28 +103,64 @@ class SearchDiscoveryConnector:
     def _fetch_live(self, queries: list[str]) -> list[SearchDiscoveryResult]:
         results: list[SearchDiscoveryResult] = []
         seen_urls: set[str] = set()
+        zero_yield_queries: list[dict[str, object]] = []
         for query_text in queries[: self.settings.search_discovery_query_limit]:
             response = requests.get(
                 "https://duckduckgo.com/html/",
                 params={"q": query_text},
                 timeout=(5, 20),
-                headers={"User-Agent": "OpportunityScout/1.0"},
+                headers={"User-Agent": BROWSER_USER_AGENT},
+                allow_redirects=True,
             )
             response.raise_for_status()
             html = response.text
-            found = 0
-            for match in RESULT_LINK_RE.finditer(html):
-                href = _extract_result_url(match.group("href"))
-                title = _clean_html(match.group("title"))
-                if not href or href in seen_urls:
-                    continue
-                if not _is_supported_job_surface(href):
-                    continue
-                results.append(SearchDiscoveryResult(query_text=query_text, title=title, url=href))
-                seen_urls.add(href)
-                found += 1
-                if found >= self.settings.search_discovery_result_limit:
-                    break
+            block_markers = [marker for marker in DDG_ZERO_YIELD_MARKERS if marker in html.lower()]
+            strict_matches = list(RESULT_LINK_RE.finditer(html))
+            fallback_candidates = _extract_fallback_anchor_candidates(html)
+            logger.info(
+                "[SEARCH_PROVIDER_RESPONSE] %s",
+                {
+                    "query": query_text,
+                    "status_code": response.status_code,
+                    "final_url": response.url,
+                    "response_bytes": len(response.content or b""),
+                    "block_markers": block_markers,
+                },
+            )
+            query_results, diagnostics = _parse_search_results_from_html(
+                query_text,
+                html,
+                seen_urls,
+                result_limit=self.settings.search_discovery_result_limit,
+            )
+            logger.info(
+                "[SEARCH_PROVIDER_PARSE] %s",
+                {
+                    "query": query_text,
+                    "strict_match_count": len(strict_matches),
+                    "fallback_anchor_candidate_count": len(fallback_candidates),
+                    "accepted_result_count": len(query_results),
+                },
+            )
+            if not query_results:
+                zero_yield = {
+                    "query": query_text,
+                    "status_code": response.status_code,
+                    "final_url": response.url,
+                    "response_bytes": len(response.content or b""),
+                    "strict_match_count": len(strict_matches),
+                    "fallback_anchor_candidate_count": len(fallback_candidates),
+                    "block_markers": block_markers,
+                    "reason": diagnostics["reason"],
+                }
+                zero_yield_queries.append(zero_yield)
+                logger.warning("[SEARCH_PROVIDER_ZERO_RESULTS] %s", zero_yield)
+            for item in query_results:
+                results.append(item)
+                seen_urls.add(item.url)
+        if not results:
+            reason = zero_yield_queries[0]["reason"] if zero_yield_queries else "search provider returned no accepted results"
+            self.last_error = f"Search discovery zero-yield: {reason}"
         return results
 
 
@@ -122,6 +172,10 @@ def _extract_result_url(href: str) -> str | None:
     if not href:
         return None
     parsed = urlparse(href)
+    if parsed.netloc.endswith("duckduckgo.com") and parsed.path.startswith("/l/"):
+        uddg = parse_qs(parsed.query).get("uddg", [])
+        if uddg:
+            return unquote(uddg[0])
     if parsed.path.startswith("/l/"):
         uddg = parse_qs(parsed.query).get("uddg", [])
         if uddg:
@@ -135,22 +189,74 @@ def _is_supported_job_surface(url: str) -> bool:
     parsed = urlparse(url)
     host = parsed.netloc.lower()
     path = parsed.path.lower()
+    if any(blocked in host for blocked in BLOCKED_AGGREGATOR_HOSTS):
+        return False
     if "greenhouse.io" in host and "/jobs/" in path:
         return True
     if "ashbyhq.com" in host and path.count("/") >= 2:
         return True
-    if any(blocked in host for blocked in ["linkedin.com", "indeed.com", "glassdoor.com"]):
-        return False
-    if any(token in path for token in ["/careers", "/jobs", "/join-us", "/work-with-us"]):
+    if host.startswith("careers."):
+        return True
+    if any(token in path for token in ["/careers", "/jobs", "/join-us", "/work-with-us", "/open-roles", "/join", "/company/careers"]):
         return True
     return False
+
+
+def _extract_fallback_anchor_candidates(html: str) -> list[str]:
+    candidates: list[str] = []
+    for match in HREF_RE.finditer(html):
+        href = _extract_result_url(match.group("href"))
+        if not href:
+            continue
+        candidates.append(href)
+    return candidates
+
+
+def _fallback_title_from_url(url: str) -> str:
+    parsed = urlparse(url)
+    slug = parsed.path.strip("/").split("/")[-1] if parsed.path.strip("/") else parsed.netloc
+    slug = slug.replace("-", " ").replace("_", " ").strip() or parsed.netloc
+    return slug.title()
+
+
+def _parse_search_results_from_html(
+    query_text: str,
+    html: str,
+    seen_urls: set[str],
+    *,
+    result_limit: int,
+) -> tuple[list[SearchDiscoveryResult], dict[str, str]]:
+    accepted: list[SearchDiscoveryResult] = []
+    for match in RESULT_LINK_RE.finditer(html):
+        href = _extract_result_url(match.group("href"))
+        title = _clean_html(match.group("title"))
+        if not href or href in seen_urls or not _is_supported_job_surface(href):
+            continue
+        accepted.append(SearchDiscoveryResult(query_text=query_text, title=title or _fallback_title_from_url(href), url=href))
+        if len(accepted) >= result_limit:
+            return accepted, {"reason": "strict matches accepted"}
+
+    for href in _extract_fallback_anchor_candidates(html):
+        if href in seen_urls or not _is_supported_job_surface(href):
+            continue
+        accepted.append(SearchDiscoveryResult(query_text=query_text, title=_fallback_title_from_url(href), url=href))
+        if len(accepted) >= result_limit:
+            return accepted, {"reason": "fallback anchors accepted"}
+    if accepted:
+        return accepted, {"reason": "fallback anchors accepted"}
+
+    if RESULT_LINK_RE.search(html):
+        return accepted, {"reason": "strict matches found but none were accepted"}
+    if _extract_fallback_anchor_candidates(html):
+        return accepted, {"reason": "fallback anchors found but none were accepted"}
+    return accepted, {"reason": "no parseable anchors detected"}
 
 
 def fetch_page_snapshot(url: str, timeout: tuple[int, int] = (5, 15)) -> tuple[str, str]:
     response = requests.get(
         url,
         timeout=timeout,
-        headers={"User-Agent": "OpportunityScout/1.0"},
+        headers={"User-Agent": BROWSER_USER_AGENT},
         allow_redirects=True,
     )
     response.raise_for_status()
