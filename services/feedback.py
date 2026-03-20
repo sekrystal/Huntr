@@ -21,6 +21,8 @@ def _get_learning(profile: CandidateProfile) -> dict:
     learning.setdefault("role_family_weights", {})
     learning.setdefault("domain_weights", {})
     learning.setdefault("source_penalties", {})
+    learning.setdefault("company_penalties", {})
+    learning.setdefault("location_penalties", {})
     learning.setdefault("generated_queries", [])
     learning.setdefault("feedback_notes", [])
     return learning
@@ -43,7 +45,6 @@ def _update_source_query_stats(session: Session, query_texts: list[str], stat_ke
         stats = dict(query.performance_stats_json or {})
         stats[stat_key] = stats.get(stat_key, 0) + 1
         query.performance_stats_json = stats
-        increment_query_stat(session, source_type="x", query_text=query_text, field_name=stat_key)
 
 
 def submit_feedback(session: Session, request: FeedbackRequest) -> Feedback:
@@ -63,8 +64,11 @@ def submit_feedback(session: Session, request: FeedbackRequest) -> Feedback:
     role_family_weights = dict(learning.get("role_family_weights", {}))
     domain_weights = dict(learning.get("domain_weights", {}))
     source_penalties = dict(learning.get("source_penalties", {}))
+    company_penalties = dict(learning.get("company_penalties", {}))
+    location_penalties = dict(learning.get("location_penalties", {}))
     feedback_notes = list(learning.get("feedback_notes", []))
     role_family = (lead.score_breakdown_json or {}).get("role_family", "generalist")
+    location_scope = evidence.get("location_scope", "unknown")
 
     if request.action in {"like", "save", "applied", "more_like_this"}:
         delta = 1.2 if request.action == "applied" else 0.8 if request.action == "more_like_this" else 0.6
@@ -97,14 +101,28 @@ def submit_feedback(session: Session, request: FeedbackRequest) -> Feedback:
             save_for_later(session, lead)
         elif request.action == "applied":
             mark_applied(session, lead)
-    elif request.action in {"dislike", "wrong_function", "too_senior", "too_junior"}:
+    elif request.action in {"dislike", "wrong_function", "too_senior", "too_junior", "wrong_geography"}:
         title_weights[lead.primary_title.lower()] = round(title_weights.get(lead.primary_title.lower(), 0.0) - 0.6, 2)
         role_family_weights[role_family] = round(role_family_weights.get(role_family, 0.0) - 0.4, 2)
         source_penalties[source_type] = round(source_penalties.get(source_type, 0.0) + 0.4, 2)
+        if request.action == "wrong_geography":
+            location_penalties[location_scope] = round(location_penalties.get(location_scope, 0.0) + 0.8, 2)
         feedback_notes.append(f"{request.action} reduced similar sourcing from {source_type}")
         _update_source_query_stats(session, query_texts, "dislikes")
         for query_text in query_texts:
             mark_query_status(session, query_text=query_text, source_type="x", status="suppressed")
+    elif request.action == "irrelevant_company":
+        company_penalties[lead.company_name.lower()] = round(company_penalties.get(lead.company_name.lower(), 0.0) + 1.2, 2)
+        source_penalties[source_type] = round(source_penalties.get(source_type, 0.0) + 0.2, 2)
+        feedback_notes.append(f"irrelevant_company reduced future focus on {lead.company_name}")
+        add_watchlist_item(
+            session,
+            item_type="company",
+            value=lead.company_name,
+            source_reason="Marked irrelevant from user feedback",
+            confidence="high",
+            status="suppressed",
+        )
     elif request.action == "mute_company":
         companies = set(profile.excluded_companies_json or [])
         companies.add(lead.company_name)
@@ -160,6 +178,8 @@ def submit_feedback(session: Session, request: FeedbackRequest) -> Feedback:
     learning["role_family_weights"] = role_family_weights
     learning["domain_weights"] = domain_weights
     learning["source_penalties"] = source_penalties
+    learning["company_penalties"] = company_penalties
+    learning["location_penalties"] = location_penalties
     learning["feedback_notes"] = feedback_notes[-8:]
     _persist_learning(profile, learning)
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from core.models import Application, Base, Lead
+from core.models import Application, Base, Lead, SourceQuery, SourceQueryStat
 from core.schemas import FeedbackRequest
 from services.feedback import submit_feedback
 from services.profile import get_candidate_profile
@@ -64,3 +64,66 @@ def test_save_and_applied_create_application_state() -> None:
     submit_feedback(session, FeedbackRequest(lead_id=lead.id, action="applied"))
     assert application.current_status == "applied"
     assert application.date_applied is not None
+
+
+def test_wrong_geography_and_irrelevant_company_update_learning_biases() -> None:
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(engine)
+    session = sessionmaker(bind=engine, expire_on_commit=False)()
+
+    profile = get_candidate_profile(session)
+    lead = Lead(
+        lead_type="listing",
+        company_name="FarAwayCo",
+        primary_title="Operations Lead",
+        rank_label="strong",
+        confidence_label="high",
+        freshness_label="fresh",
+        title_fit_label="core match",
+        qualification_fit_label="strong fit",
+        score_breakdown_json={"role_family": "operations"},
+        evidence_json={"company_domain": "faraway.co", "source_type": "greenhouse", "location_scope": "uk", "source_queries": [], "snippets": ["ops"]},
+    )
+    session.add(lead)
+    session.flush()
+
+    submit_feedback(session, FeedbackRequest(lead_id=lead.id, action="wrong_geography"))
+    submit_feedback(session, FeedbackRequest(lead_id=lead.id, action="irrelevant_company"))
+    learning = profile.extracted_summary_json["learning"]
+    assert learning["location_penalties"]["uk"] > 0
+    assert learning["company_penalties"]["farawayco"] > 0
+
+
+def test_feedback_updates_query_stats_once_per_event() -> None:
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(engine)
+    session = sessionmaker(bind=engine, expire_on_commit=False)()
+
+    lead = Lead(
+        lead_type="listing",
+        company_name="DemoCo",
+        primary_title="Deployment Strategist",
+        rank_label="strong",
+        confidence_label="high",
+        freshness_label="fresh",
+        title_fit_label="core match",
+        qualification_fit_label="strong fit",
+        score_breakdown_json={"role_family": "go_to_market"},
+        evidence_json={"company_domain": "demo.ai", "source_type": "x", "source_queries": ["deployment strategist hiring"], "snippets": ["ops"]},
+    )
+    session.add(lead)
+    session.add(
+        SourceQuery(
+            query_text="deployment strategist hiring",
+            source_type="x",
+            performance_stats_json={"likes": 0},
+        )
+    )
+    session.flush()
+
+    submit_feedback(session, FeedbackRequest(lead_id=lead.id, action="more_like_this"))
+
+    query = session.query(SourceQuery).filter(SourceQuery.query_text == "deployment strategist hiring").one()
+    stat = session.query(SourceQueryStat).filter(SourceQueryStat.query_text == "deployment strategist hiring").one()
+    assert query.performance_stats_json["likes"] == 1
+    assert stat.likes == 1
