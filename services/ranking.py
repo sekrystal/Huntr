@@ -103,7 +103,19 @@ def classify_qualification_fit(profile: CandidateProfile, title: str, descriptio
         return "underqualified", -2.0, ["seniority above candidate band"]
     if "phd required" in description_lower or "board certification" in description_lower:
         return "underqualified", -2.4, ["credential requirement mismatch"]
-    return "strong fit", 1.0, reasons
+
+    strong_title_signals = [
+        "chief of staff",
+        "operations",
+        "operator",
+        "bizops",
+        "business operations",
+        "strategic operations",
+    ]
+    if any(signal in title_lower for signal in strong_title_signals):
+        return "strong fit", 1.0, reasons
+
+    return "stretch", 0.4, ["qualification fit is plausible but not strongly evidenced by title"]
 
 
 def score_lead(
@@ -155,6 +167,14 @@ def score_lead(
     domain_feedback = domain_weights.get((company_domain or "").lower(), 0.0)
     source_feedback = -source_penalties.get(source_type, 0.0)
 
+    positive_feedback_total = sum(max(value, 0.0) for value in [title_feedback, role_family_feedback, domain_feedback])
+    positive_feedback_cap = 1.5
+    if positive_feedback_total > positive_feedback_cap:
+        scale = positive_feedback_cap / positive_feedback_total
+        title_feedback = title_feedback * scale if title_feedback > 0 else title_feedback
+        role_family_feedback = role_family_feedback * scale if role_family_feedback > 0 else role_family_feedback
+        domain_feedback = domain_feedback * scale if domain_feedback > 0 else domain_feedback
+
     composite = round(
         freshness_score
         + title_fit_score
@@ -174,7 +194,7 @@ def score_lead(
         2,
     )
 
-    rank_label = "strong" if composite >= 5.5 else "medium" if composite >= max(profile.minimum_fit_threshold, 3.0) else "weak"
+    rank_label = "strong" if composite >= 7.5 else "medium" if composite >= max(profile.minimum_fit_threshold, 3.0) else "weak"
     confidence_components = [
         source_quality,
         evidence_quality,

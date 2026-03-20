@@ -57,6 +57,15 @@ class Settings(BaseSettings):
     search_discovery_provider: str = "duckduckgo_html"
     search_discovery_query_limit: int = 8
     search_discovery_result_limit: int = 5
+    discovery_max_search_queries_per_cycle: int = 8
+    discovery_max_new_companies_per_cycle: int = 6
+    discovery_max_expansions_per_cycle: int = 4
+    discovery_company_cooldown_minutes: int = 180
+    discovery_max_pages_to_crawl_per_cycle: int = 4
+    discovery_explore_ratio: float = 0.4
+    allowed_location_scopes: str = "us,remote_us"
+    allow_remote_global: bool = False
+    allow_ambiguous_locations: bool = False
 
     model_config = SettingsConfigDict(
         env_file=APP_ROOT / ".env",
@@ -79,6 +88,10 @@ class Settings(BaseSettings):
     @property
     def ashby_orgs(self) -> list[str]:
         return [item.strip() for item in self.ashby_org_keys.split(",") if item.strip()]
+
+    @property
+    def allowed_location_scope_list(self) -> list[str]:
+        return [item.strip().lower() for item in self.allowed_location_scopes.split(",") if item.strip()]
 
 
 @lru_cache(maxsize=1)

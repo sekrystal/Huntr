@@ -88,9 +88,66 @@ def test_signal_only_leads_are_excluded_by_default() -> None:
     items = list_leads(session)
     assert len(items) == 1
     assert items[0].lead_type == "listing"
+    assert items[0].source_platform == "ashby"
 
     items_with_signals = list_leads(session, include_signal_only=True)
     assert {item.lead_type for item in items_with_signals} == {"listing", "signal"}
+
+
+def test_lead_response_exposes_source_provenance_and_lineage() -> None:
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(engine)
+    session = sessionmaker(bind=engine, expire_on_commit=False)()
+    _seed_profile(session)
+
+    listing = Listing(
+        company_name="Agentic Co",
+        title="Operations Lead",
+        location="Remote, US",
+        url="https://job-boards.greenhouse.io/agentic/jobs/1",
+        source_type="greenhouse",
+        posted_at=datetime.utcnow(),
+        first_published_at=datetime.utcnow(),
+        last_seen_at=datetime.utcnow(),
+        description_text="Own operating cadence and planning.",
+        listing_status="active",
+        freshness_hours=3.0,
+        freshness_days=0,
+        metadata_json={
+            "discovery_source": "search_web",
+            "surface_provenance": "discovered_new",
+            "source_lineage": "greenhouse+search_web",
+            "source_board_token": "agentic",
+        },
+    )
+    session.add(listing)
+    session.flush()
+    session.add(
+        Lead(
+            lead_type="listing",
+            company_name="Agentic Co",
+            primary_title="Operations Lead",
+            listing_id=listing.id,
+            surfaced_at=datetime.utcnow(),
+            rank_label="strong",
+            confidence_label="high",
+            freshness_label="fresh",
+            title_fit_label="core match",
+            qualification_fit_label="strong fit",
+            explanation="Agent discovered listing",
+            score_breakdown_json={"composite": 7.5},
+            evidence_json={"url": listing.url, "source_type": "greenhouse", "source_platform": "greenhouse+search_web"},
+            hidden=False,
+        )
+    )
+    session.commit()
+
+    items = list_leads(session)
+
+    assert len(items) == 1
+    assert items[0].source_provenance == "discovered_new"
+    assert items[0].source_lineage == "greenhouse+search_web"
+    assert items[0].discovery_source == "search_web"
 
 
 def test_default_leads_query_suppresses_stale_listing_even_if_lead_snapshot_looks_fresh() -> None:
@@ -377,3 +434,49 @@ def test_default_leads_query_returns_timestamp_precision_and_recently_seen_rows_
     assert item.last_seen_at.tzinfo is not None
     assert item.evidence_json["first_published_at"].endswith("Z")
     assert item.evidence_json["last_seen_at"].endswith("Z")
+
+
+def test_default_leads_query_suppresses_out_of_region_listing() -> None:
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(engine)
+    session = sessionmaker(bind=engine, expire_on_commit=False)()
+    _seed_profile(session)
+
+    listing = Listing(
+        company_name="LondonCo",
+        title="Operations Lead",
+        location="London, UK",
+        url="https://job-boards.greenhouse.io/londonco/jobs/1",
+        source_type="greenhouse",
+        posted_at=datetime.utcnow(),
+        first_published_at=datetime.utcnow(),
+        last_seen_at=datetime.utcnow(),
+        description_text="Run strategic operations for an AI startup.",
+        listing_status="active",
+        freshness_hours=3.0,
+        freshness_days=0,
+        metadata_json={"location_scope": "uk", "location_reason": "matched region hint uk"},
+    )
+    session.add(listing)
+    session.flush()
+    session.add(
+        Lead(
+            lead_type="listing",
+            company_name="LondonCo",
+            primary_title="Operations Lead",
+            listing_id=listing.id,
+            surfaced_at=datetime.utcnow(),
+            rank_label="strong",
+            confidence_label="high",
+            freshness_label="fresh",
+            title_fit_label="core match",
+            qualification_fit_label="strong fit",
+            explanation="Should be filtered by location policy",
+            score_breakdown_json={"composite": 8.0},
+            evidence_json={"url": listing.url, "source_type": "greenhouse"},
+            hidden=False,
+        )
+    )
+    session.commit()
+
+    assert list_leads(session) == []

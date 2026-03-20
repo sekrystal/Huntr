@@ -17,6 +17,8 @@ FeedbackAction = Literal[
     "too_senior",
     "too_junior",
     "wrong_function",
+    "wrong_geography",
+    "irrelevant_company",
     "more_like_this",
 ]
 
@@ -124,6 +126,9 @@ class LeadResponse(BaseModel):
     title_fit_label: str
     qualification_fit_label: str
     source_platform: str
+    source_provenance: Optional[str] = None
+    source_lineage: Optional[str] = None
+    discovery_source: Optional[str] = None
     saved: bool = False
     applied: bool = False
     current_status: Optional[str] = None
@@ -154,6 +159,7 @@ class SyncResult(BaseModel):
     discovery_metrics: dict[str, dict[str, int]] = Field(default_factory=dict)
     surfaced_count: int = 0
     discovery_summary: Optional[str] = None
+    discovery_status: dict[str, Any] = Field(default_factory=dict)
 
 
 class StatsResponse(BaseModel):
@@ -301,6 +307,50 @@ class ConnectorResetResponse(BaseModel):
     connector_name: str
     status: str
     summary: str
+
+
+class CompanyDiscoveryRowResponse(BaseModel):
+    company_name: str
+    company_domain: Optional[str] = None
+    normalized_company_key: str
+    discovery_source: str
+    discovery_query: Optional[str] = None
+    first_discovered_at: datetime
+    last_discovered_at: datetime
+    last_expanded_at: Optional[datetime] = None
+    board_type: str
+    board_locator: str
+    surface_provenance: Optional[str] = None
+    source_lineage: Optional[str] = None
+    expansion_status: str
+    expansion_attempts: int
+    last_expansion_result_count: int
+    visible_yield_count: int
+    suppressed_yield_count: int
+    location_filtered_count: int = 0
+    utility_score: float
+    blocked_reason: Optional[str] = None
+    metadata_json: dict[str, Any] = Field(default_factory=dict)
+
+
+class DiscoveryStatusResponse(BaseModel):
+    total_known_companies: int = 0
+    discovered_last_24h: int = 0
+    expanded_last_24h: int = 0
+    recent_items: list[CompanyDiscoveryRowResponse] = Field(default_factory=list)
+    latest_planner_run: Optional[dict[str, Any]] = None
+    recent_plans: list[dict[str, Any]] = Field(default_factory=list)
+    recent_expansions: list[dict[str, Any]] = Field(default_factory=list)
+    recent_visible_yield: list[CompanyDiscoveryRowResponse] = Field(default_factory=list)
+    blocked_or_cooled_down: list[CompanyDiscoveryRowResponse] = Field(default_factory=list)
+    recent_greenhouse_tokens: list[dict[str, Any]] = Field(default_factory=list)
+    recent_ashby_identifiers: list[dict[str, Any]] = Field(default_factory=list)
+    recent_geography_rejections: list[dict[str, Any]] = Field(default_factory=list)
+    recent_agentic_leads: list[dict[str, Any]] = Field(default_factory=list)
+    next_recommended_queries: list[str] = Field(default_factory=list)
+    latest_openai_usage: dict[str, bool] = Field(default_factory=dict)
+    cycle_metrics: dict[str, int] = Field(default_factory=dict)
+    recent_successful_expansions: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class DailyDigestResponse(BaseModel):

@@ -152,6 +152,7 @@ def lead_frame(leads: list[dict[str, Any]]) -> pd.DataFrame:
                 "confidence": lead["confidence_label"],
                 "current_status": lead.get("current_status") or "",
                 "source": lead.get("source_platform") or lead.get("source_type") or "",
+                "provenance": lead.get("source_lineage") or lead.get("source_platform") or lead.get("source_type") or "",
                 "change": (lead.get("evidence_json") or {}).get("change_state") or "",
                 "last_agent_action": lead.get("last_agent_action") or "",
                 "saved": "yes" if lead.get("saved") else "",
@@ -261,6 +262,7 @@ def render_table(leads: list[dict[str, Any]], key: str, applied_view: bool = Fal
         "posted_at",
         "company",
         "title",
+        "provenance",
         "lead_type",
         "freshness",
         "fit",
@@ -286,6 +288,7 @@ def render_table(leads: list[dict[str, Any]], key: str, applied_view: bool = Fal
             "surfaced_at": "Surfaced",
             "posted_at": "Posted",
             "lead_type": "Type",
+            "provenance": "Provenance",
             "freshness": "Freshness",
             "fit": "Fit",
             "confidence": "Confidence",
@@ -329,7 +332,7 @@ def render_detail(lead: dict[str, Any], key: str) -> None:
     if change_state:
         st.caption(f"Change marker: {change_state}")
     st.caption(
-        f"Source: {lead.get('source_platform') or lead.get('source_type')} | URL: {lead.get('url') or 'none'} | Application status: {lead.get('current_status') or 'unsaved'}"
+        f"Source: {lead.get('source_platform') or lead.get('source_type')} | Provenance: {lead.get('source_lineage') or lead.get('source_platform') or lead.get('source_type')} | URL: {lead.get('url') or 'none'} | Application status: {lead.get('current_status') or 'unsaved'}"
     )
 
     action_row = st.columns(6)
@@ -658,6 +661,87 @@ def render_learning_tab() -> None:
         st.caption(line)
 
 
+def render_discovery_tab() -> None:
+    st.subheader("Discovery")
+    st.caption("Recent planner output, ATS surface discoveries, expansions, and visible leads from agent-discovered sources.")
+    payload = fetch_json("/discovery-status")
+
+    top = st.columns(4)
+    top[0].metric("Known companies", payload.get("total_known_companies", 0))
+    top[1].metric("Discovered 24h", payload.get("discovered_last_24h", 0))
+    top[2].metric("Expanded 24h", payload.get("expanded_last_24h", 0))
+    top[3].metric("Agentic visible leads", len(payload.get("recent_agentic_leads", [])))
+
+    cycle_metrics = payload.get("cycle_metrics") or {}
+    if cycle_metrics:
+        st.caption(
+            "Cycle metrics: "
+            f"new companies={cycle_metrics.get('discovered_companies_new_count', 0)}, "
+            f"new greenhouse tokens={cycle_metrics.get('discovered_greenhouse_tokens_new_count', 0)}, "
+            f"new ashby identifiers={cycle_metrics.get('discovered_ashby_identifiers_new_count', 0)}, "
+            f"agent-discovered visible leads={cycle_metrics.get('agent_discovered_visible_leads_count', 0)}"
+        )
+    openai_usage = payload.get("latest_openai_usage") or {}
+    if openai_usage:
+        st.caption(
+            "OpenAI usage: "
+            f"planner={'yes' if openai_usage.get('planner') else 'fallback'}, "
+            f"triage={'yes' if openai_usage.get('triage') else 'fallback'}, "
+            f"learning={'yes' if openai_usage.get('learning') else 'fallback'}"
+        )
+
+    planner = payload.get("latest_planner_run") or {}
+    if planner:
+        with st.expander("Latest planner run", expanded=True):
+            st.write(planner.get("summary") or "No planner summary.")
+            metadata = planner.get("metadata_json") or {}
+            if metadata.get("queries"):
+                st.caption("Queries: " + ", ".join(metadata["queries"][:8]))
+            if metadata.get("company_archetypes"):
+                st.caption("Company archetypes: " + ", ".join(metadata["company_archetypes"][:6]))
+            if metadata.get("priority_notes"):
+                st.caption("Priority notes: " + "; ".join(metadata["priority_notes"][:4]))
+
+    if payload.get("recent_greenhouse_tokens"):
+        st.markdown("#### Greenhouse Tokens")
+        st.dataframe(pd.DataFrame(payload["recent_greenhouse_tokens"]), use_container_width=True, hide_index=True)
+    if payload.get("recent_ashby_identifiers"):
+        st.markdown("#### Ashby Identifiers")
+        st.dataframe(pd.DataFrame(payload["recent_ashby_identifiers"]), use_container_width=True, hide_index=True)
+    if payload.get("recent_expansions"):
+        st.markdown("#### Recent Expansions")
+        st.dataframe(pd.DataFrame(payload["recent_expansions"]), use_container_width=True, hide_index=True)
+    if payload.get("recent_successful_expansions"):
+        st.markdown("#### Successful Expansions")
+        st.dataframe(pd.DataFrame(payload["recent_successful_expansions"]), use_container_width=True, hide_index=True)
+    if payload.get("recent_visible_yield"):
+        st.markdown("#### Visible Yield")
+        visible_df = pd.DataFrame(payload["recent_visible_yield"])
+        st.dataframe(
+            visible_df[["company_name", "board_type", "board_locator", "visible_yield_count", "location_filtered_count", "utility_score"]],
+            use_container_width=True,
+            hide_index=True,
+        )
+    if payload.get("recent_geography_rejections"):
+        st.markdown("#### Geography Rejections")
+        st.dataframe(pd.DataFrame(payload["recent_geography_rejections"]), use_container_width=True, hide_index=True)
+    if payload.get("recent_agentic_leads"):
+        st.markdown("#### Agent-Discovered Visible Leads")
+        st.dataframe(pd.DataFrame(payload["recent_agentic_leads"]), use_container_width=True, hide_index=True)
+    if payload.get("blocked_or_cooled_down"):
+        st.markdown("#### Blocked Or Cooled Down")
+        blocked_df = pd.DataFrame(payload["blocked_or_cooled_down"])
+        st.dataframe(
+            blocked_df[["company_name", "board_type", "expansion_status", "blocked_reason", "last_expansion_result_count", "utility_score"]],
+            use_container_width=True,
+            hide_index=True,
+        )
+    if payload.get("next_recommended_queries"):
+        st.markdown("#### Next Queries")
+        for query in payload["next_recommended_queries"]:
+            st.caption(query)
+
+
 def render_autonomy_ops_tab() -> None:
     st.subheader("Autonomy Ops")
     st.caption("Operational health, governance, failures, and digest summaries for unattended runs.")
@@ -778,7 +862,7 @@ def main() -> None:
     include_unqualified = toolbar[3].toggle("Show under or overqualified", value=False)
     freshness_map = {"7 days": 7, "14 days": 14, "all": 0}
 
-    tabs = st.tabs(["Leads", "Saved", "Applied", "Profile", "Agent Activity", "Investigations", "Learning", "Autonomy Ops"])
+    tabs = st.tabs(["Leads", "Saved", "Applied", "Profile", "Discovery", "Agent Activity", "Investigations", "Learning", "Autonomy Ops"])
 
     base_query = build_query(
         freshness_days=freshness_map[freshness_choice],
@@ -825,15 +909,18 @@ def main() -> None:
         render_profile_tab(profile, learning)
 
     with tabs[4]:
-        render_agent_activity_tab()
+        render_discovery_tab()
 
     with tabs[5]:
-        render_investigations_tab()
+        render_agent_activity_tab()
 
     with tabs[6]:
-        render_learning_tab()
+        render_investigations_tab()
 
     with tabs[7]:
+        render_learning_tab()
+
+    with tabs[8]:
         render_autonomy_ops_tab()
 
 

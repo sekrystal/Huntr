@@ -11,6 +11,7 @@ from core.schemas import (
     AutonomyStatusResponse,
     ConnectorResetRequest,
     ConnectorResetResponse,
+    DiscoveryStatusResponse,
     InvestigationsResponse,
     LearningViewResponse,
     RuntimeControlRequest,
@@ -20,6 +21,7 @@ from scripts.seed_demo_data import main as seed_demo_main
 from services.activity import list_agent_activities, log_agent_failure
 from services.autonomy import build_autonomy_health, build_daily_digest, build_latest_run_digest, list_connector_health
 from services.connector_admin import reset_connector_health
+from services.company_discovery import build_discovery_status
 from services.investigations import list_investigations
 from services.learning import build_learning_view
 from services.pipeline import (
@@ -62,6 +64,11 @@ def get_autonomy_status(db: Session = Depends(get_db)) -> AutonomyStatusResponse
         daily_digest=build_daily_digest(db),
         connector_health=list_connector_health(db),
     )
+
+
+@router.get("/discovery-status", response_model=DiscoveryStatusResponse)
+def get_discovery_status(db: Session = Depends(get_db)) -> DiscoveryStatusResponse:
+    return build_discovery_status(db)
 
 
 @router.get("/runtime-control", response_model=RuntimeControlResponse)

@@ -253,9 +253,15 @@ def run_scout_agent(
     new_names = [f"{lead.company_name} / {lead.primary_title}" for lead in inserted_leads[:4]]
     mode_label = "live source data" if source_mode == "live" else "source data"
     discovery_suffix = f" {result.discovery_summary}" if result.discovery_summary else ""
+    discovery_memory_suffix = ""
+    if result.discovery_status:
+        discovery_memory_suffix = (
+            f" New companies discovered: {result.discovery_status.get('new_companies_discovered', 0)}. "
+            f"Companies expanded: {result.discovery_status.get('companies_selected_for_expansion', 0)}."
+        )
     summary = (
         f"Scout added {listing_count} listings and {signal_count} signals from {mode_label}. "
-        f"New rows: {', '.join(new_names) if new_names else 'none'}.{discovery_suffix}"
+        f"New rows: {', '.join(new_names) if new_names else 'none'}.{discovery_suffix}{discovery_memory_suffix}"
     )
     log_agent_activity(
         session,
@@ -278,6 +284,7 @@ def run_scout_agent(
             "signal_count": signal_count,
             "discovery_metrics": result.discovery_metrics,
             "discovery_summary": result.discovery_summary,
+            "discovery_status": result.discovery_status,
         },
     )
     return AgentRunResponse(agent="scout", summary=summary)

@@ -33,7 +33,7 @@ show_env_matches() {
   fi
 
   printf 'env_file=%s\n' "$env_file"
-  grep -E '^(OPENAI_ENABLED|OPENAI_MODEL|DEMO_MODE|GREENHOUSE_ENABLED|SEARCH_DISCOVERY_ENABLED|ENABLE_SCHEDULER)=' "$env_file" || true
+  grep -E '^(OPENAI_ENABLED|OPENAI_MODEL|DEMO_MODE|GREENHOUSE_ENABLED|SEARCH_DISCOVERY_ENABLED|ENABLE_SCHEDULER|DISCOVERY_MAX_SEARCH_QUERIES_PER_CYCLE|DISCOVERY_MAX_NEW_COMPANIES_PER_CYCLE|DISCOVERY_MAX_EXPANSIONS_PER_CYCLE|ALLOWED_LOCATION_SCOPES|ALLOW_REMOTE_GLOBAL|ALLOW_AMBIGUOUS_LOCATIONS)=' "$env_file" || true
   if grep -q '^OPENAI_API_KEY=' "$env_file"; then
     if grep -Eq '^OPENAI_API_KEY=.+$' "$env_file"; then
       printf 'OPENAI_API_KEY=<set>\n'
@@ -89,6 +89,10 @@ printf '\n'
 
 print_header "curl /runtime-control"
 curl -s "${API_URL}/runtime-control" || printf 'curl failed\n'
+printf '\n'
+
+print_header "curl /discovery-status"
+curl -s "${API_URL}/discovery-status" || printf 'curl failed\n'
 printf '\n'
 
 print_header "curl POST /runtime-control action=run_once"

@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from core.schemas import ListingRecord
+from services.location_policy import classify_location_scope
 
 
 def _parse_datetime(value: Optional[str]) -> Optional[datetime]:
@@ -15,6 +16,7 @@ def _parse_datetime(value: Optional[str]) -> Optional[datetime]:
 def normalize_greenhouse_job(job: dict) -> ListingRecord:
     content = job.get("content", "") or ""
     location = (job.get("location") or {}).get("name")
+    location_classification = classify_location_scope(location)
     first_published_at = _parse_datetime(job.get("first_published"))
     created_at = _parse_datetime(job.get("created_at"))
     updated_at = _parse_datetime(job.get("updated_at"))
@@ -35,12 +37,16 @@ def normalize_greenhouse_job(job: dict) -> ListingRecord:
             "page_text": job.get("page_text", ""),
             "source_queries": job.get("source_queries", []),
             "discovery_source": job.get("discovery_source"),
+            "surface_provenance": job.get("surface_provenance"),
+            "source_lineage": job.get("source_lineage"),
             "company_domain": job.get("company_domain"),
             "source_board_token": job.get("source_board_token"),
             "internal_job_id": job.get("internal_job_id") or job.get("id"),
             "live_quality": job.get("live_quality", "unknown"),
             "source_updated_at": job.get("updated_at"),
             "source_created_at": job.get("created_at"),
+            "location_scope": location_classification["scope"],
+            "location_reason": location_classification["reason"],
         },
     )
 
@@ -50,6 +56,7 @@ def normalize_ashby_job(job: dict, org_name: Optional[str] = None) -> ListingRec
     location = None
     if job.get("location"):
         location = job["location"].get("location") or job["location"].get("name")
+    location_classification = classify_location_scope(location)
     published_at = _parse_datetime(job.get("publishedDate"))
     updated_at = _parse_datetime(job.get("updatedAt"))
 
@@ -70,9 +77,13 @@ def normalize_ashby_job(job: dict, org_name: Optional[str] = None) -> ListingRec
             "page_text": job.get("page_text", ""),
             "source_queries": job.get("source_queries", []),
             "discovery_source": job.get("discovery_source"),
+            "surface_provenance": job.get("surface_provenance"),
+            "source_lineage": job.get("source_lineage"),
             "company_domain": job.get("companyDomain"),
             "source_org_key": job.get("source_org_key"),
             "internal_job_id": job.get("id"),
             "source_updated_at": job.get("updatedAt"),
+            "location_scope": location_classification["scope"],
+            "location_reason": location_classification["reason"],
         },
     )

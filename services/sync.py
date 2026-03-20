@@ -14,22 +14,34 @@ from connectors.greenhouse import GreenhouseConnector
 from connectors.search_web import (
     SearchDiscoveryConnector,
     build_search_queries,
-    extract_discovered_ashby_orgs,
-    extract_discovered_greenhouse_tokens,
 )
 from connectors.x_search import XSearchConnector
 from core.config import get_settings
 from core.logging import get_logger
-from core.models import Application, Investigation, Lead, Listing, RecheckQueue, Signal, SourceQuery, WatchlistItem
+from core.models import Application, CompanyDiscovery, Investigation, Lead, Listing, RecheckQueue, Signal, SourceQuery, WatchlistItem
 from core.schemas import ListingRecord, LeadResponse, SignalRecord, StatsResponse, SyncResult
-from services.activity import append_lead_agent_trace
+from services.activity import append_lead_agent_trace, log_agent_activity, log_agent_run
 from services.ai_judges import judge_critic_with_ai, judge_fit_with_ai
+from services.company_discovery import (
+    classify_surface_provenance,
+    build_query_inputs,
+    candidate_from_search_result,
+    source_lineage_for_surface,
+    normalize_company_key,
+    record_expansion_attempt,
+    select_candidates_for_expansion,
+    summarize_source_mix,
+    triage_candidate,
+    upsert_discovered_company,
+)
 from services.connectors_health import run_connector_fetch
+from services.discovery_agents import extractor_agent, learning_agent, planner_agent, triage_agent
 from services.explain import build_explanation
 from services.extract_signal import extract_many
 from services.freshness import classify_freshness_label, has_expired_pattern, validate_listing
 from services.investigations import mark_investigation_attempt, upsert_investigation
 from services.learning import generate_follow_up_tasks, increment_query_stat, next_action_for_application
+from services.location_policy import classify_location_scope, is_location_allowed_for_profile
 from services.normalize import normalize_ashby_job, normalize_greenhouse_job
 from services.profile import get_candidate_profile
 from services.query_learning import ensure_source_queries
@@ -166,6 +178,7 @@ def _authoritative_listing_context(session: Session, lead: Lead) -> dict:
     listing = session.get(Listing, lead.listing_id) if lead.listing_id else None
     page_text = ""
     http_status = None
+    metadata = {}
     if listing:
         metadata = dict(listing.metadata_json or {})
         page_text = metadata.get("page_text", "")
@@ -186,6 +199,9 @@ def _authoritative_listing_context(session: Session, lead: Lead) -> dict:
         "listing_status": listing.listing_status if listing else evidence.get("listing_status"),
         "expiration_confidence": listing.expiration_confidence if listing else evidence.get("expiration_confidence", 0.0),
         "description_text": listing.description_text if listing else "",
+        "location": listing.location if listing else evidence.get("location"),
+        "location_scope": metadata.get("location_scope") if listing else evidence.get("location_scope"),
+        "metadata_json": metadata if listing else dict(evidence.get("listing_metadata_json") or {}),
         "page_text": page_text or "",
         "http_status": http_status,
     }
@@ -243,6 +259,8 @@ def evaluate_critic_decision(
     description_text = context["description_text"]
     http_status = context["http_status"]
     last_seen_at = context["last_seen_at"]
+    location = context["location"]
+    location_policy = is_location_allowed_for_profile(profile, location, settings=get_settings())
     reasons: list[str] = []
     status = "visible"
     suppression_category = "none"
@@ -301,6 +319,25 @@ def evaluate_critic_decision(
             reasons.append(f"Freshness exceeded the default {freshness_window_days}-day window")
             status = "suppressed"
             suppression_category = "stale"
+        if not location_policy["allowed"] and status == "visible":
+            logger.info(
+                "[LOCATION_GATE] %s",
+                {
+                    "company": lead.company_name,
+                    "title": lead.primary_title,
+                    "location": location,
+                    "scope": location_policy["scope"],
+                    "status": location_policy["status"],
+                    "reason": location_policy["reason"],
+                },
+            )
+            reasons.append(location_policy["reason"])
+            if location_policy["status"] == "blocked":
+                status = "suppressed"
+                suppression_category = "location"
+            else:
+                status = "uncertain"
+                suppression_category = "location"
         if lead.confidence_label == "low" and status == "visible":
             reasons.append("Confidence is too low for default surfaced listings")
             status = "uncertain"
@@ -369,12 +406,17 @@ def evaluate_critic_decision(
             "expiration_confidence": round(expiration_confidence, 2),
             "http_status": http_status,
             "expired_pattern_detected": has_expired_pattern(description_text, page_text),
+            "location": location,
+            "location_scope": location_policy["scope"],
+            "location_allowed": location_policy["allowed"],
+            "location_reason": location_policy["reason"],
             "first_published_at": context["first_published_at"],
             "discovered_at": context["discovered_at"],
             "last_seen_at": context["last_seen_at"],
             "updated_at": context["updated_at"],
         },
         "ai_critic_assessment": ai_critic,
+        "location_policy": location_policy,
     }
 
 
@@ -408,6 +450,9 @@ def apply_critic_decision_to_lead(
     evidence["discovered_at"] = _isoformat_utc(decision["discovered_at"])
     evidence["last_seen_at"] = _isoformat_utc(decision["last_seen_at"])
     evidence["updated_at"] = _isoformat_utc(decision["updated_at"])
+    evidence["location_scope"] = decision["location_policy"]["scope"]
+    evidence["location_allowed"] = decision["location_policy"]["allowed"]
+    evidence["location_reason"] = decision["location_policy"]["reason"]
     liveness = dict(evidence.get("liveness_evidence") or {})
     for key in ("first_published_at", "discovered_at", "last_seen_at", "updated_at"):
         liveness[key] = _isoformat_utc(liveness.get(key))
@@ -518,6 +563,7 @@ def _upsert_lead(
     source_platform = "x_demo" if source_type == "x" else source_type
     if discovery_source:
         source_platform = f"{source_type}+{discovery_source}"
+    location_classification = classify_location_scope(location)
     evidence_json.update(
         {
             "matched_profile_fields": breakdown.get("matched_profile_fields", []),
@@ -530,7 +576,13 @@ def _upsert_lead(
             "source_type": source_type,
             "source_platform": source_platform,
             "discovery_source": discovery_source,
+            "source_provenance": (listing.metadata_json or {}).get("surface_provenance") if listing else evidence_json.get("source_provenance"),
+            "source_lineage": (listing.metadata_json or {}).get("source_lineage") if listing else evidence_json.get("source_lineage", source_platform),
             "company_domain": company_domain,
+            "location": location,
+            "location_scope": (listing.metadata_json or {}).get("location_scope") if listing else location_classification["scope"],
+            "location_reason": (listing.metadata_json or {}).get("location_reason") if listing else location_classification["reason"],
+            "listing_metadata_json": dict(listing.metadata_json or {}) if listing else {},
             "url": listing_url,
             "first_published_at": listing.first_published_at.isoformat() if listing and listing.first_published_at else None,
             "discovered_at": listing.discovered_at.isoformat() if listing and listing.discovered_at else None,
@@ -618,6 +670,8 @@ def sync_all(
     discovered_greenhouse_queries: dict[str, list[str]] = {}
     discovered_ashby_queries: dict[str, list[str]] = {}
     discovery_metrics: dict[str, dict[str, int]] = {}
+    discovery_status: dict[str, object] = {}
+    cycle_metrics: Counter[str] = Counter()
 
     watchlist_values = [
         item.value
@@ -625,12 +679,46 @@ def sync_all(
             select(WatchlistItem).where(WatchlistItem.status.in_(["active", "proposed"])).order_by(WatchlistItem.updated_at.desc())
         ).all()
     ]
-    search_queries = build_search_queries(
-        core_titles=profile.core_titles_json or profile.preferred_titles_json or [],
-        adjacent_titles=profile.adjacent_titles_json or [],
-        preferred_domains=profile.preferred_domains_json or [],
-        watchlist_items=watchlist_values,
+    planner_plan = planner_agent(session, profile, settings=settings)
+    query_inputs = build_query_inputs(session, profile)
+    search_queries = planner_plan["queries"][: settings.discovery_max_search_queries_per_cycle]
+    logger.info(
+        "[PLANNER_PLAN] %s",
+        {
+            "count": len(search_queries),
+            "examples": search_queries[:6],
+            "query_themes": planner_plan.get("query_themes", []),
+            "role_clusters": planner_plan.get("role_clusters", []),
+            "company_archetypes": planner_plan.get("company_archetypes", []),
+            "priority_notes": planner_plan.get("priority_notes", []),
+        },
     )
+    logger.info("[QUERY_DIVERSIFICATION] %s", {"queries": search_queries[:10]})
+    log_agent_activity(
+        session,
+        agent_name="Planner",
+        action="planned discovery cycle",
+        target_type="queries",
+        target_count=len(search_queries),
+        result_summary=f"Planner prepared {len(search_queries)} discovery queries across {len(planner_plan.get('query_themes', [])) or len(search_queries)} themes.",
+    )
+    log_agent_run(
+        session,
+        "Planner",
+        "planned discovery cycle",
+        f"Planner prepared {len(search_queries)} discovery queries and prioritized {len(planner_plan.get('company_archetypes', []))} company archetypes.",
+        len(search_queries),
+        metadata_json=planner_plan,
+    )
+
+    configured_board_keys = {
+        *{f"greenhouse:{token}" for token in settings.greenhouse_tokens},
+        *{f"ashby:{org}" for org in settings.ashby_orgs},
+    }
+    selected_discoveries: list[tuple] = []
+    selected_discovery_rows_by_key: dict[str, CompanyDiscovery] = {}
+    discovery_rows_touched: list[CompanyDiscovery] = []
+    new_discovery_count = 0
 
     if settings.search_discovery_enabled and search_queries:
         search_results, search_live, _ = run_connector_fetch(
@@ -639,8 +727,286 @@ def sync_all(
             partial(search_connector.fetch, search_queries, "search_web" in strict_live_connectors),
             date_fields=[],
         )
-        discovered_greenhouse_queries = extract_discovered_greenhouse_tokens(search_results)
-        discovered_ashby_queries = extract_discovered_ashby_orgs(search_results)
+        extractions, derived_results = extractor_agent(search_results, settings=settings)
+        extraction_by_url: dict[str, object] = {}
+        for extraction in extractions:
+            extraction_by_url[extraction.source_url] = extraction
+            extraction_by_url[extraction.final_url] = extraction
+            for derived in derived_results:
+                if any(token and token in derived.url for token in [*extraction.greenhouse_tokens, *extraction.ashby_identifiers]):
+                    extraction_by_url.setdefault(derived.url, extraction)
+        if derived_results:
+            deduped_results: list[SearchDiscoveryResult] = []
+            seen_result_urls: set[str] = set()
+            for result in [*search_results, *derived_results]:
+                if result.url in seen_result_urls:
+                    continue
+                seen_result_urls.add(result.url)
+                deduped_results.append(result)
+            search_results = deduped_results
+        logger.info(
+            "[EXTRACTOR_DISCOVERY] %s",
+            {
+                "pages_crawled": len(extractions),
+                "derived_ats_results": len(derived_results),
+                "greenhouse_tokens": sorted({token for item in extractions for token in item.greenhouse_tokens})[:12],
+                "ashby_identifiers": sorted({org for item in extractions for org in item.ashby_identifiers})[:12],
+            },
+        )
+        if extractions:
+            new_greenhouse_tokens = {
+                token
+                for item in extractions
+                for token in item.greenhouse_tokens
+                if token.lower() not in {configured.lower() for configured in settings.greenhouse_tokens}
+            }
+            new_ashby_identifiers = {
+                org
+                for item in extractions
+                for org in item.ashby_identifiers
+                if org.lower() not in {configured.lower() for configured in settings.ashby_orgs}
+            }
+            cycle_metrics["discovered_greenhouse_tokens_new_count"] += len(new_greenhouse_tokens)
+            cycle_metrics["discovered_ashby_identifiers_new_count"] += len(new_ashby_identifiers)
+            logger.info(
+                "[GREENHOUSE_TOKEN_DISCOVERY] %s",
+                {
+                    "count": sum(1 for item in extractions if item.greenhouse_tokens),
+                    "tokens": sorted({token for item in extractions for token in item.greenhouse_tokens})[:12],
+                    "new_tokens": sorted(new_greenhouse_tokens)[:12],
+                },
+            )
+            logger.info(
+                "[ASHBY_IDENTIFIER_DISCOVERY] %s",
+                {
+                    "count": sum(1 for item in extractions if item.ashby_identifiers),
+                    "identifiers": sorted({org for item in extractions for org in item.ashby_identifiers})[:12],
+                    "new_identifiers": sorted(new_ashby_identifiers)[:12],
+                },
+            )
+        logger.info(
+            "[DISCOVERY_RESULTS] %s",
+            {
+                "raw_results": len(search_results),
+                "surface_mix": dict(Counter(result.source_surface for result in search_results)),
+            },
+        )
+        candidate_rows_by_key: dict[str, tuple] = {}
+        for result in search_results:
+            candidate = candidate_from_search_result(result)
+            if not candidate:
+                continue
+            extraction = extraction_by_url.get(result.url)
+            if extraction:
+                if extraction.company_name:
+                    candidate.company_name = extraction.company_name
+                    candidate.normalized_company_key = normalize_company_key(extraction.company_name, candidate.company_domain)
+                if extraction.ats_type in {"greenhouse", "ashby", "careers_page"}:
+                    candidate.board_type = extraction.ats_type
+            triage_score, triage_reasons, triage_decision = triage_agent(
+                session=session,
+                profile=profile,
+                candidate=candidate,
+                configured_boards=configured_board_keys,
+                settings=settings,
+            )
+            row, is_new = upsert_discovered_company(session, candidate, triage_score, triage_reasons)
+            surface_provenance = classify_surface_provenance(
+                candidate.board_type,
+                candidate.board_locator,
+                is_new=is_new,
+                settings=settings,
+            )
+            source_lineage = source_lineage_for_surface(candidate.board_type, surface_provenance, candidate.discovery_source)
+            row.utility_score = max(row.utility_score, triage_score)
+            extra_metadata = {}
+            if extraction:
+                extra_metadata = {
+                    "careers_url": extraction.careers_url,
+                    "ats_type_hypothesis": extraction.ats_type,
+                    "greenhouse_tokens": extraction.greenhouse_tokens,
+                    "ashby_identifiers": extraction.ashby_identifiers,
+                    "geography_hints": extraction.geography_hints,
+                    "discovered_urls": extraction.discovered_urls[:10],
+                    "extraction_confidence": extraction.confidence,
+                    "extraction_used_openai": extraction.via_openai,
+                }
+            row.metadata_json = {
+                **(row.metadata_json or {}),
+                "triage_decision": triage_decision,
+                "surface_provenance": surface_provenance,
+                "source_lineage": source_lineage,
+                "triage_used_openai": any(reason.startswith("ai:") for reason in triage_reasons),
+                **extra_metadata,
+            }
+            discovery_rows_touched.append(row)
+            candidate.is_new = is_new
+            if is_new:
+                new_discovery_count += 1
+                cycle_metrics["discovered_companies_new_count"] += 1
+                logger.info(
+                    "[NEW_COMPANY_DISCOVERED] %s",
+                    {
+                        "company": candidate.company_name,
+                        "board_type": candidate.board_type,
+                        "board_locator": candidate.board_locator,
+                        "surface_provenance": surface_provenance,
+                        "source_lineage": source_lineage,
+                        "query": candidate.discovery_query,
+                        "score": triage_score,
+                        "decision": triage_decision,
+                    },
+                )
+            else:
+                logger.info(
+                    "[DISCOVERY_DEDUPE] %s",
+                    {
+                        "company": candidate.company_name,
+                        "board_type": candidate.board_type,
+                        "board_locator": candidate.board_locator,
+                        "surface_provenance": surface_provenance,
+                        "source_lineage": source_lineage,
+                        "query": candidate.discovery_query,
+                        "score": triage_score,
+                        "decision": triage_decision,
+                        "existing_status": row.expansion_status,
+                        "existing_utility": row.utility_score,
+                    },
+                )
+            logger.info(
+                "[DISCOVERY_PROVENANCE] %s",
+                {
+                    "company": candidate.company_name,
+                    "board_type": candidate.board_type,
+                    "board_locator": candidate.board_locator,
+                    "surface_provenance": surface_provenance,
+                    "source_lineage": source_lineage,
+                    "is_new_company_row": is_new,
+                },
+            )
+            existing_candidate = candidate_rows_by_key.get(candidate.discovery_key)
+            if triage_decision == "drop":
+                continue
+            if existing_candidate is None or triage_score > existing_candidate[2]:
+                if existing_candidate is not None:
+                    logger.info(
+                        "[DISCOVERY_DEDUPE] %s",
+                        {
+                            "discovery_key": candidate.discovery_key,
+                            "kept_company": candidate.company_name,
+                            "replaced_lower_score": existing_candidate[2],
+                            "kept_score": triage_score,
+                        },
+                    )
+                candidate_rows_by_key[candidate.discovery_key] = (candidate, row, triage_score, triage_reasons)
+        candidate_rows = list(candidate_rows_by_key.values())
+        selected_discoveries = select_candidates_for_expansion(candidate_rows, settings=settings)
+        selected_discovery_rows_by_key = {row.discovery_key: row for _, row, _, _ in selected_discoveries}
+        for candidate, row, score, reasons in selected_discoveries:
+            provenance = (row.metadata_json or {}).get("surface_provenance")
+            logger.info(
+                "[EXPANSION_SELECTED] %s",
+                {
+                    "company": candidate.company_name,
+                    "board_type": candidate.board_type,
+                    "board_locator": candidate.board_locator,
+                    "surface_provenance": provenance,
+                    "source_lineage": (row.metadata_json or {}).get("source_lineage"),
+                    "score": score,
+                    "reasons": reasons,
+                    "is_new": candidate.is_new,
+                    "status": row.expansion_status,
+                },
+            )
+            if provenance in {"discovered_existing", "discovered_new"}:
+                cycle_metrics[f"agent_discovered_{candidate.board_type}_expansion_attempts"] += 1
+        discovered_greenhouse_queries = {
+            candidate.board_locator: [candidate.discovery_query]
+            for candidate, _, _, _ in selected_discoveries
+            if candidate.board_type == "greenhouse"
+        }
+        discovered_ashby_queries = {
+            candidate.board_locator: [candidate.discovery_query]
+            for candidate, _, _, _ in selected_discoveries
+            if candidate.board_type == "ashby"
+        }
+        logger.info("[ASHBY_DISCOVERY] %s", {"orgs": list(discovered_ashby_queries), "count": len(discovered_ashby_queries)})
+        logger.info(
+            "[DISCOVERED_COMPANIES] %s",
+            {
+                "search_results": len(search_results),
+                "candidate_companies": len(candidate_rows),
+                "new_companies": new_discovery_count,
+                "known_companies": max(len(candidate_rows) - new_discovery_count, 0),
+            },
+        )
+        logger.info(
+            "[COMPANY_TRIAGE] %s",
+            [
+                {
+                    "company": candidate.company_name,
+                    "board_type": candidate.board_type,
+                    "board_locator": candidate.board_locator,
+                    "score": score,
+                    "reasons": reasons,
+                    "is_new": candidate.is_new,
+                    "decision": (row.metadata_json or {}).get("triage_decision", "pursue"),
+                }
+                for candidate, _, score, reasons in sorted(candidate_rows, key=lambda item: item[2], reverse=True)[:8]
+            ],
+        )
+        logger.info(
+            "[DISCOVERY_BUDGET] %s",
+            {
+                "max_search_queries_per_cycle": settings.discovery_max_search_queries_per_cycle,
+                "max_new_companies_per_cycle": settings.discovery_max_new_companies_per_cycle,
+                "max_expansions_per_cycle": settings.discovery_max_expansions_per_cycle,
+                "selected_for_expansion": [
+                    f"{candidate.board_type}:{candidate.board_locator}" for candidate, _, _, _ in selected_discoveries
+                ],
+            },
+        )
+        log_agent_activity(
+            session,
+            agent_name="Discovery",
+            action="searched new companies and sources",
+            target_type="search_results",
+            target_count=len(search_results),
+            result_summary=f"Discovery found {len(search_results)} search results and {len(candidate_rows)} candidate companies.",
+        )
+        log_agent_run(
+            session,
+            "Discovery",
+            "searched new companies and sources",
+            f"Discovery found {len(search_results)} search results and {len(candidate_rows)} triaged company candidates.",
+            len(search_results),
+            metadata_json={
+                "queries": search_queries,
+                "search_result_count": len(search_results),
+                "candidate_count": len(candidate_rows),
+                "new_company_count": new_discovery_count,
+            },
+        )
+        log_agent_activity(
+            session,
+            agent_name="Triage",
+            action="prioritized discovery candidates",
+            target_type="companies",
+            target_count=len(selected_discoveries),
+            result_summary=f"Triage selected {len(selected_discoveries)} companies/boards for expansion.",
+        )
+        log_agent_run(
+            session,
+            "Triage",
+            "prioritized discovery candidates",
+            f"Triage selected {len(selected_discoveries)} expansion targets out of {len(candidate_rows)} candidates.",
+            len(selected_discoveries),
+            metadata_json={
+                "selected": [f"{candidate.board_type}:{candidate.board_locator}" for candidate, _, _, _ in selected_discoveries],
+                "candidate_count": len(candidate_rows),
+                "used_openai": any((row.metadata_json or {}).get("triage_used_openai") for _, row, _, _ in candidate_rows),
+            },
+        )
     search_verified_count = sum(
         1
         for result in search_results
@@ -678,6 +1044,78 @@ def sync_all(
             ),
             date_fields=["publishedDate"],
         )
+    greenhouse_job_counts = dict(getattr(greenhouse_connector, "last_board_counts", {}) or {})
+    ashby_job_counts = Counter(job.get("source_org_key") for job in ashby_jobs if job.get("source_org_key"))
+    configured_greenhouse_tokens = {token.lower() for token in settings.greenhouse_tokens}
+    configured_ashby_orgs = {org.lower() for org in settings.ashby_orgs}
+    for job in greenhouse_jobs:
+        token = (job.get("source_board_token") or "").lower()
+        discovery_key = f"greenhouse:{token}" if token else None
+        selected_row = selected_discovery_rows_by_key.get(discovery_key) if discovery_key else None
+        provenance = "preseeded" if token in configured_greenhouse_tokens else "discovered_existing"
+        if selected_row is not None:
+            provenance = (selected_row.metadata_json or {}).get("surface_provenance", provenance)
+        job["surface_provenance"] = provenance
+        job["source_lineage"] = source_lineage_for_surface("greenhouse", provenance, job.get("discovery_source"))
+    for job in ashby_jobs:
+        org = (job.get("source_org_key") or "").lower()
+        discovery_key = f"ashby:{org}" if org else None
+        selected_row = selected_discovery_rows_by_key.get(discovery_key) if discovery_key else None
+        provenance = "preseeded" if org in configured_ashby_orgs else "discovered_existing"
+        if selected_row is not None:
+            provenance = (selected_row.metadata_json or {}).get("surface_provenance", provenance)
+        job["surface_provenance"] = provenance
+        job["source_lineage"] = source_lineage_for_surface("ashby", provenance, job.get("discovery_source"))
+    for candidate, row, score, reasons in selected_discoveries:
+        result_count = (
+            greenhouse_job_counts.get(candidate.board_locator, 0)
+            if candidate.board_type == "greenhouse"
+            else int(ashby_job_counts.get(candidate.board_locator, 0))
+        )
+        blocked_reason = "investigate" if candidate.board_type == "careers_page" else None
+        record_expansion_attempt(row, result_count=result_count, blocked_reason=blocked_reason)
+        row.metadata_json = {
+            **(row.metadata_json or {}),
+            "selected_score": score,
+            "selected_reasons": reasons,
+            "selected_this_cycle_at": datetime.utcnow().isoformat(),
+        }
+        provenance = (row.metadata_json or {}).get("surface_provenance")
+        logger.info(
+            "[COMPANY_EXPANSION] %s",
+            {
+                "company": candidate.company_name,
+                "board_type": candidate.board_type,
+                "board_locator": candidate.board_locator,
+                "surface_provenance": provenance,
+                "result_count": result_count,
+                "score": score,
+            },
+        )
+        logger.info(
+            "[EXPANSION_RESULT] %s",
+            {
+                "company": candidate.company_name,
+                "board_type": candidate.board_type,
+                "board_locator": candidate.board_locator,
+                "surface_provenance": provenance,
+                "source_lineage": (row.metadata_json or {}).get("source_lineage"),
+                "result_count": result_count,
+                "blocked_reason": blocked_reason,
+                "status": row.expansion_status,
+            },
+        )
+        if provenance in {"discovered_existing", "discovered_new"} and result_count > 0:
+            cycle_metrics[f"agent_discovered_{candidate.board_type}_expansion_successes"] += 1
+        logger.info(
+            "[EXPANSION_ACTION] %s",
+            {
+                "action": f"expand_{candidate.board_type}",
+                "board_locator": candidate.board_locator,
+                "company": candidate.company_name,
+                "result_count": result_count,
+            },
+        )
     if "x_search" in enabled_connectors:
         x_raw_signals, x_live, _ = run_connector_fetch(
             session,
@@ -688,6 +1126,16 @@ def sync_all(
 
     greenhouse_normalized = [normalize_greenhouse_job(job) for job in greenhouse_jobs]
     greenhouse_verified = [validate_listing(record) for record in greenhouse_normalized if _verify_listing_record(record)]
+    cycle_metrics["agent_discovered_listings_count"] += sum(
+        1
+        for record in greenhouse_normalized
+        if (record.metadata_json or {}).get("surface_provenance") in {"discovered_existing", "discovered_new"}
+    )
+    cycle_metrics["agent_discovered_verified_listings_count"] += sum(
+        1
+        for record in greenhouse_verified
+        if (record.metadata_json or {}).get("surface_provenance") in {"discovered_existing", "discovered_new"}
+    )
     discovery_metrics["greenhouse"] = {
         "raw": len(greenhouse_jobs),
         "normalized": len(greenhouse_normalized),
@@ -701,6 +1149,16 @@ def sync_all(
 
     ashby_normalized = [normalize_ashby_job(job, job.get("companyName")) for job in ashby_jobs]
     ashby_verified = [validate_listing(record) for record in ashby_normalized if _verify_listing_record(record)]
+    cycle_metrics["agent_discovered_listings_count"] += sum(
+        1
+        for record in ashby_normalized
+        if (record.metadata_json or {}).get("surface_provenance") in {"discovered_existing", "discovered_new"}
+    )
+    cycle_metrics["agent_discovered_verified_listings_count"] += sum(
+        1
+        for record in ashby_verified
+        if (record.metadata_json or {}).get("surface_provenance") in {"discovered_existing", "discovered_new"}
+    )
     discovery_metrics["ashby"] = {
         "raw": len(ashby_jobs),
         "normalized": len(ashby_normalized),
@@ -759,6 +1217,8 @@ def sync_all(
         listing_objects.append(listing)
         listings_ingested += 1
 
+    discovery_yield_counts: dict[str, Counter[str]] = defaultdict(Counter)
+
     used_listing_ids: set[int] = set()
     for signal in signal_objects:
         resolved_company = resolve_company_name(session, signal.company_guess, signal.raw_text)
@@ -795,6 +1255,31 @@ def sync_all(
             )
             leads_created += 1 if created else 0
             leads_updated += 0 if created else 1
+            if (matching_listing.metadata_json or {}).get("discovery_source") == "search_web":
+                discovery_key = None
+                if matching_listing.source_type == "greenhouse" and (matching_listing.metadata_json or {}).get("source_board_token"):
+                    discovery_key = f"greenhouse:{matching_listing.metadata_json['source_board_token']}"
+                elif matching_listing.source_type == "ashby" and (matching_listing.metadata_json or {}).get("source_org_key"):
+                    discovery_key = f"ashby:{matching_listing.metadata_json['source_org_key']}"
+                if discovery_key:
+                    discovery_yield_counts[discovery_key]["visible" if not lead.hidden else "suppressed"] += 1
+                    if (lead.evidence_json or {}).get("suppression_category") == "location":
+                        discovery_yield_counts[discovery_key]["location"] += 1
+                        cycle_metrics["geography_rejected_discovered_surfaces_count"] += 1
+                        logger.info(
+                            "[DISCOVERY_LOCATION_REJECT] %s",
+                            {
+                                "company": matching_listing.company_name,
+                                "title": matching_listing.title,
+                                "board_type": matching_listing.source_type,
+                                "discovery_key": discovery_key,
+                                "surface_provenance": (matching_listing.metadata_json or {}).get("surface_provenance"),
+                                "source_lineage": (matching_listing.metadata_json or {}).get("source_lineage"),
+                                "location": matching_listing.location,
+                                "location_scope": (lead.evidence_json or {}).get("location_scope"),
+                                "reason": (lead.evidence_json or {}).get("location_reason"),
+                            },
+                        )
             query_text = next((item.get("query_text") for item in x_raw_signals if item["url"] == signal.source_url), None)
             if query_text:
                 _query_stats_increment(session, [query_text])
@@ -895,6 +1380,31 @@ def sync_all(
         )
         leads_created += 1 if created else 0
         leads_updated += 0 if created else 1
+        if (listing.metadata_json or {}).get("discovery_source") == "search_web":
+            discovery_key = None
+            if listing.source_type == "greenhouse" and (listing.metadata_json or {}).get("source_board_token"):
+                discovery_key = f"greenhouse:{listing.metadata_json['source_board_token']}"
+            elif listing.source_type == "ashby" and (listing.metadata_json or {}).get("source_org_key"):
+                discovery_key = f"ashby:{listing.metadata_json['source_org_key']}"
+            if discovery_key:
+                discovery_yield_counts[discovery_key]["visible" if not lead.hidden else "suppressed"] += 1
+                if (lead.evidence_json or {}).get("suppression_category") == "location":
+                    discovery_yield_counts[discovery_key]["location"] += 1
+                    cycle_metrics["geography_rejected_discovered_surfaces_count"] += 1
+                    logger.info(
+                        "[DISCOVERY_LOCATION_REJECT] %s",
+                        {
+                            "company": listing.company_name,
+                            "title": listing.title,
+                            "board_type": listing.source_type,
+                            "discovery_key": discovery_key,
+                            "surface_provenance": (listing.metadata_json or {}).get("surface_provenance"),
+                            "source_lineage": (listing.metadata_json or {}).get("source_lineage"),
+                            "location": listing.location,
+                            "location_scope": (lead.evidence_json or {}).get("location_scope"),
+                            "reason": (lead.evidence_json or {}).get("location_reason"),
+                        },
+                    )
         if query_texts:
             _query_stats_increment(session, query_texts)
 
@@ -916,6 +1426,81 @@ def sync_all(
                 )
 
     generate_follow_up_tasks(session)
+    for discovery_key, row in selected_discovery_rows_by_key.items():
+        counts = discovery_yield_counts.get(discovery_key, Counter())
+        if (row.metadata_json or {}).get("surface_provenance") in {"discovered_existing", "discovered_new"}:
+            cycle_metrics["agent_discovered_visible_leads_count"] += counts.get("visible", 0)
+        record_expansion_attempt(
+            row,
+            result_count=row.last_expansion_result_count,
+            visible_yield=counts.get("visible", 0),
+            suppressed_yield=counts.get("suppressed", 0),
+            location_filtered=counts.get("location", 0),
+            count_attempt=False,
+        )
+        logger.info(
+            "[NEW_COMPANY_VISIBLE_YIELD] %s",
+            {
+                "company": row.company_name,
+                "board_type": row.board_type,
+                "board_locator": row.board_locator,
+                "surface_provenance": (row.metadata_json or {}).get("surface_provenance"),
+                "source_lineage": (row.metadata_json or {}).get("source_lineage"),
+                "visible": counts.get("visible", 0),
+                "suppressed": counts.get("suppressed", 0),
+                "location_filtered": counts.get("location", 0),
+                "utility_score": row.utility_score,
+            },
+        )
+    learning_update = learning_agent(session, profile, settings=settings)
+    logger.info(
+        "[LEARNING_UPDATE] %s",
+        {
+            "positive_companies": learning_update.get("positive_companies", []),
+            "negative_companies": learning_update.get("negative_companies", []),
+            "next_queries": learning_update.get("next_queries", [])[:6],
+        },
+    )
+    logger.info(
+        "[NEXT_CYCLE_RECOMMENDATIONS] %s",
+        {
+            "focus_companies": learning_update.get("focus_companies", []),
+            "notes": learning_update.get("notes", []),
+        },
+    )
+    logger.info(
+        "[PLANNER_NEXT_STEPS] %s",
+        {
+            "next_queries": learning_update.get("next_queries", [])[:8],
+            "focus_companies": learning_update.get("focus_companies", [])[:8],
+            "notes": learning_update.get("notes", [])[:6],
+        },
+    )
+    log_agent_activity(
+        session,
+        agent_name="Learning",
+        action="updated discovery priors",
+        target_type="queries",
+        target_count=len(learning_update.get("next_queries", [])),
+        result_summary=f"Learning proposed {len(learning_update.get('next_queries', []))} next-cycle discovery queries.",
+    )
+    log_agent_run(
+        session,
+        "Learning",
+        "updated discovery priors",
+        f"Learning proposed {len(learning_update.get('next_queries', []))} next-cycle queries and highlighted {len(learning_update.get('focus_companies', []))} focus companies.",
+        len(learning_update.get("next_queries", [])),
+        metadata_json=learning_update,
+    )
+    logger.info("[DISCOVERY_CYCLE_METRICS] %s", dict(cycle_metrics))
+    log_agent_run(
+        session,
+        "Discovery",
+        "recorded discovery cycle metrics",
+        "Discovery cycle metrics recorded for agent-discovered ATS provenance and yield.",
+        int(cycle_metrics.get("agent_discovered_visible_leads_count", 0)),
+        metadata_json={"cycle_metrics": dict(cycle_metrics)},
+    )
     session.flush()
     surfaced_count = session.scalar(select(func.count(Lead.id)).where(Lead.hidden.is_(False))) or 0
     discovery_summary = None
@@ -932,6 +1517,15 @@ def sync_all(
         logger.error("[DISCOVERY_FAILURE] No jobs found from any source.")
     elif surfaced_count > 0:
         discovery_summary = "Jobs found and surfaced normally."
+    discovery_status = {
+        "new_companies_discovered": new_discovery_count,
+        "companies_selected_for_expansion": len(selected_discoveries),
+        "selected_source_mix": summarize_source_mix(list(selected_discovery_rows_by_key.values())),
+        "selected_companies": [row.company_name for row in selected_discovery_rows_by_key.values()],
+        "next_recommended_queries": learning_update.get("next_queries", []),
+        "focus_companies": learning_update.get("focus_companies", []),
+        "cycle_metrics": dict(cycle_metrics),
+    }
     return SyncResult(
         signals_ingested=signals_ingested,
         listings_ingested=listings_ingested,
@@ -942,6 +1536,7 @@ def sync_all(
         discovery_metrics=discovery_metrics,
         surfaced_count=surfaced_count,
         discovery_summary=discovery_summary,
+        discovery_status=discovery_status,
     )
 
 
@@ -974,6 +1569,7 @@ def list_leads(
             duplicate_losers=duplicate_losers,
         )
         authoritative = _authoritative_listing_context(session, lead)
+        authoritative_listing = authoritative.get("listing")
         freshness_days = decision["freshness_days"]
         freshness_hours = decision["freshness_hours"]
         listing_status = decision["listing_status"]
@@ -1012,6 +1608,10 @@ def list_leads(
             continue
 
         response_evidence = dict(evidence)
+        listing_metadata = dict((authoritative_listing.metadata_json or {})) if authoritative_listing else {}
+        response_evidence["discovery_source"] = response_evidence.get("discovery_source") or listing_metadata.get("discovery_source")
+        response_evidence["source_provenance"] = response_evidence.get("source_provenance") or listing_metadata.get("surface_provenance")
+        response_evidence["source_lineage"] = response_evidence.get("source_lineage") or listing_metadata.get("source_lineage") or response_evidence.get("source_platform")
         response_evidence["critic_status"] = decision["status"]
         response_evidence["critic_reasons"] = decision["reasons"]
         response_evidence["suppression_reason"] = "; ".join(decision["reasons"]) if decision["status"] != "visible" else None
@@ -1050,6 +1650,9 @@ def list_leads(
                 title_fit_label=lead.title_fit_label,
                 qualification_fit_label=lead.qualification_fit_label,
                 source_platform=evidence.get("source_platform", source_type),
+                source_provenance=response_evidence.get("source_provenance"),
+                source_lineage=response_evidence.get("source_lineage", response_evidence.get("source_platform", source_type)),
+                discovery_source=response_evidence.get("discovery_source"),
                 saved=saved,
                 applied=applied,
                 current_status=current_status,

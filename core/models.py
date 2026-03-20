@@ -319,6 +319,34 @@ class ConnectorHealth(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
 
+class CompanyDiscovery(Base):
+    __tablename__ = "company_discovery"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    discovery_key: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    company_name: Mapped[str] = mapped_column(String(255), index=True)
+    company_domain: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, index=True)
+    normalized_company_key: Mapped[str] = mapped_column(String(255), index=True)
+    discovery_source: Mapped[str] = mapped_column(String(50), index=True)
+    discovery_query: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    first_discovered_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+    last_discovered_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+    last_expanded_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, index=True)
+    board_type: Mapped[str] = mapped_column(String(50), index=True)
+    board_locator: Mapped[str] = mapped_column(String(255), index=True)
+    expansion_status: Mapped[str] = mapped_column(String(50), default="discovered", index=True)
+    expansion_attempts: Mapped[int] = mapped_column(Integer, default=0)
+    last_expansion_result_count: Mapped[int] = mapped_column(Integer, default=0)
+    visible_yield_count: Mapped[int] = mapped_column(Integer, default=0)
+    suppressed_yield_count: Mapped[int] = mapped_column(Integer, default=0)
+    location_filtered_count: Mapped[int] = mapped_column(Integer, default=0)
+    utility_score: Mapped[float] = mapped_column(Float, default=0.0)
+    blocked_reason: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+
 class RunDigest(Base):
     __tablename__ = "run_digests"
 

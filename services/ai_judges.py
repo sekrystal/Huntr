@@ -231,3 +231,93 @@ def write_explanation_with_ai(context: dict[str, Any]) -> Optional[str]:
     if not result:
         return None
     return result.get("explanation")
+
+
+def plan_search_with_ai(profile_text: str, learning_summary: dict[str, Any], recent_outcomes: dict[str, Any]) -> Optional[dict[str, Any]]:
+    schema = {
+        "type": "object",
+        "properties": {
+            "query_themes": {"type": "array", "items": {"type": "string"}},
+            "role_clusters": {"type": "array", "items": {"type": "string"}},
+            "company_archetypes": {"type": "array", "items": {"type": "string"}},
+            "priority_notes": {"type": "array", "items": {"type": "string"}},
+            "candidate_queries": {"type": "array", "items": {"type": "string"}},
+        },
+        "required": ["query_themes", "role_clusters", "company_archetypes", "priority_notes", "candidate_queries"],
+        "additionalProperties": False,
+    }
+    return call_openai_json(
+        "search_planner",
+        schema,
+        "You are a conservative search planner for a job discovery agent. Generate diversified but constraint-aware search themes and queries for relevant US-oriented startup opportunities. Do not broaden into unrelated functions or geographies.",
+        json.dumps(
+            {
+                "profile": profile_text[:5000],
+                "learning_summary": learning_summary,
+                "recent_outcomes": recent_outcomes,
+            }
+        ),
+    )
+
+
+def judge_discovery_candidate_with_ai(candidate: dict[str, Any]) -> Optional[dict[str, Any]]:
+    schema = {
+        "type": "object",
+        "properties": {
+            "decision": {"type": "string", "enum": ["pursue", "defer", "drop", "investigate"]},
+            "priority_adjustment": {"type": "number"},
+            "source_kind": {"type": "string", "enum": ["greenhouse", "ashby", "careers_page", "direct_listing", "junk", "unknown"]},
+            "geography_risk": {"type": "string", "enum": ["low", "medium", "high"]},
+            "reasons": {"type": "array", "items": {"type": "string"}},
+        },
+        "required": ["decision", "priority_adjustment", "source_kind", "geography_risk", "reasons"],
+        "additionalProperties": False,
+    }
+    return call_openai_json(
+        "discovery_candidate_judgment",
+        schema,
+        "You judge whether a discovered company, board, or careers page is worth spending autonomous discovery budget on. Be conservative and prefer startup operating roles in the United States.",
+        json.dumps(candidate),
+    )
+
+
+def critique_discovery_cycle_with_ai(context: dict[str, Any]) -> Optional[dict[str, Any]]:
+    schema = {
+        "type": "object",
+        "properties": {
+            "next_queries": {"type": "array", "items": {"type": "string"}},
+            "focus_companies": {"type": "array", "items": {"type": "string"}},
+            "notes": {"type": "array", "items": {"type": "string"}},
+        },
+        "required": ["next_queries", "focus_companies", "notes"],
+        "additionalProperties": False,
+    }
+    return call_openai_json(
+        "discovery_cycle_critique",
+        schema,
+        "You review a discovery cycle and recommend the next best constrained searches and companies to focus on.",
+        json.dumps(context),
+    )
+
+
+def interpret_discovery_page_with_ai(context: dict[str, Any]) -> Optional[dict[str, Any]]:
+    schema = {
+        "type": "object",
+        "properties": {
+            "company_name": {"type": ["string", "null"]},
+            "ats_type": {"type": "string", "enum": ["greenhouse", "ashby", "careers_page", "direct_listing", "unknown"]},
+            "greenhouse_tokens": {"type": "array", "items": {"type": "string"}},
+            "ashby_identifiers": {"type": "array", "items": {"type": "string"}},
+            "geography_hint": {"type": ["string", "null"]},
+            "confidence": {"type": "number"},
+            "reasons": {"type": "array", "items": {"type": "string"}},
+        },
+        "required": ["company_name", "ats_type", "greenhouse_tokens", "ashby_identifiers", "geography_hint", "confidence", "reasons"],
+        "additionalProperties": False,
+    }
+    return call_openai_json(
+        "discovery_page_interpretation",
+        schema,
+        "You classify discovered careers pages and ATS-linked pages. Extract only identifiers clearly supported by the page content. Be conservative and do not invent Greenhouse tokens or Ashby org identifiers.",
+        json.dumps(context),
+    )
