@@ -192,6 +192,7 @@ Each connector tracks:
 - quarantine count
 - circuit-breaker state
 - whether the connector is currently approved for unattended live mode
+- blocked reason when it is intentionally or operationally unavailable
 
 Behavior:
 
@@ -223,6 +224,72 @@ Failure classifications include:
 - `source_empty`
 - `schema_drift`
 - `source_not_found`
+
+## Search Discovery
+
+The repo now has a first pragmatic search-discovery layer in addition to structured ATS polling.
+
+How it works:
+
+- `search_web` generates targeted queries from core titles, adjacent titles, preferred domains, and watchlist companies
+- queries currently use the DuckDuckGo HTML surface
+- results are filtered to supported ATS job surfaces only:
+  - `job-boards.greenhouse.io`
+  - `jobs.ashbyhq.com`
+- discovered ATS identifiers are merged into the existing Greenhouse and Ashby fetch flow
+- fetched jobs still go through the same normalization, freshness, Critic, and ranking pipeline
+
+This is intentionally narrow:
+
+- search expands recall
+- ATS fetch remains the source of truth
+- Critic remains the final visibility gate
+
+Search discovery flags:
+
+- `SEARCH_DISCOVERY_ENABLED`
+- `SEARCH_DISCOVERY_PROVIDER=duckduckgo_html`
+- `SEARCH_DISCOVERY_QUERY_LIMIT`
+- `SEARCH_DISCOVERY_RESULT_LIMIT`
+
+What is tested today:
+
+- query generation
+- ATS URL filtering
+- Greenhouse/Ashby token extraction
+- merge into the existing ATS pipeline
+- evidence labeling like `greenhouse+search_web`
+
+What is not yet fully live-validated in this sandbox:
+
+- a real outbound DuckDuckGo discovery run end to end
+
+## Connector Recovery
+
+Connector state is persisted, so fixing env alone is not always enough.
+
+Operator path:
+
+1. update env
+2. restart API and worker
+3. inspect `/autonomy-status`
+4. if the connector is still stuck in persisted cooldown/circuit state, intentionally reset just that connector
+
+Reset API:
+
+```bash
+curl -s -X POST http://127.0.0.1:8000/connectors/greenhouse/reset-health \
+  -H 'Content-Type: application/json' \
+  -d '{"confirm":true}'
+```
+
+Common blocked reasons:
+
+- `missing_tokens`
+- `disabled`
+- `config_error`
+- `cooldown`
+- `circuit_open`
 
 ## Soak Testing
 

@@ -26,6 +26,17 @@ sudo systemctl restart opportunity-scout-worker.service
 sudo systemctl restart opportunity-scout-ui.service
 ```
 
+After changing `/etc/opportunity-scout/opportunity-scout.env`, restart in this order so both processes pick up the same cached config:
+
+```bash
+sudo systemctl stop opportunity-scout-worker.service
+sudo systemctl restart opportunity-scout-api.service
+sudo systemctl restart opportunity-scout-worker.service
+sudo systemctl restart opportunity-scout-ui.service
+```
+
+Both the API and the worker cache settings in-process, and the database engine is bound at process start. Env changes do not apply until restart.
+
 ## Disable All Autonomy
 
 Edit `/etc/opportunity-scout/opportunity-scout.env`:
@@ -70,6 +81,38 @@ Look for:
 - `last_failure_at`
 - `trust_score`
 - `approved_for_unattended`
+- `blocked_reason`
+- `config_key`
+
+Common `blocked_reason` values:
+
+- `missing_tokens`
+- `disabled`
+- `config_error`
+- `cooldown`
+- `circuit_open`
+
+## Reset One Connector's Persisted Health State
+
+Use this only when you intentionally want to clear a stuck circuit/cooldown after fixing config or source issues.
+
+API:
+
+```bash
+curl -s -X POST http://127.0.0.1:8000/connectors/greenhouse/reset-health \
+  -H 'Content-Type: application/json' \
+  -d '{"confirm":true}'
+```
+
+Script:
+
+```bash
+cd /opt/opportunity-scout
+sudo -u oppscout env $(grep -v '^#' /etc/opportunity-scout/opportunity-scout.env | xargs) \
+  /opt/opportunity-scout/.venv/bin/python scripts/reset_connector_health.py --connector greenhouse --confirm
+```
+
+After resetting health, restart the API and worker before validating the connector again.
 
 ## Inspect Alerts
 

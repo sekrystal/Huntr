@@ -271,6 +271,8 @@ class AutonomyDigestResponse(BaseModel):
 class ConnectorHealthResponse(BaseModel):
     connector_name: str
     status: str
+    blocked_reason: Optional[str] = None
+    config_key: Optional[str] = None
     consecutive_failures: int
     recent_successes: int = 0
     recent_failures: int = 0
@@ -286,6 +288,16 @@ class ConnectorHealthResponse(BaseModel):
     quarantine_count: int = 0
     approved_for_unattended: bool = False
     last_freshness_lag_seconds: Optional[int] = None
+
+
+class ConnectorResetRequest(BaseModel):
+    confirm: bool = False
+
+
+class ConnectorResetResponse(BaseModel):
+    connector_name: str
+    status: str
+    summary: str
 
 
 class DailyDigestResponse(BaseModel):

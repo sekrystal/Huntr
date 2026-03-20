@@ -78,15 +78,27 @@ class GreenhouseConnector:
         self.last_item_count: int = 0
         self.last_board_counts: dict[str, int] = {}
 
-    def fetch(self, require_live: bool = False) -> tuple[list[dict], bool]:
+    def fetch(
+        self,
+        require_live: bool = False,
+        board_tokens_override: list[str] | None = None,
+        discovery_queries: dict[str, list[str]] | None = None,
+    ) -> tuple[list[dict], bool]:
         self.last_quarantine_count = 0
         self.last_item_count = 0
         self.last_failure_classification = None
         self.last_board_counts = {}
-        if self.settings.greenhouse_tokens:
+        board_tokens = board_tokens_override or self.settings.greenhouse_tokens
+        discovery_queries = discovery_queries or {}
+        if board_tokens:
             try:
                 self.last_error = None
-                jobs = self._fetch_live(self.settings.greenhouse_tokens)
+                jobs = self._fetch_live(board_tokens)
+                for job in jobs:
+                    token = job.get("source_board_token")
+                    if token and token in discovery_queries:
+                        job["source_queries"] = list(dict.fromkeys(discovery_queries[token]))
+                        job["discovery_source"] = "search_web"
                 self.last_item_count = len(jobs)
                 return jobs, True
             except GreenhouseFetchError as exc:

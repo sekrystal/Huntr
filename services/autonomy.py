@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from core.config import Settings, get_settings
 from core.models import AgentRun, ConnectorHealth, DailyDigest, FollowUpTask, Investigation, Lead, RunDigest, RuntimeControl
 from core.schemas import AutonomyDigestResponse, AutonomyHealthResponse, ConnectorHealthResponse, DailyDigestResponse
+from services.connector_admin import CONNECTOR_CONFIG_KEYS, connector_blocked_reason
 from services.runtime_control import effective_worker_interval_seconds
 
 
@@ -89,26 +90,53 @@ def build_daily_digest(session: Session) -> DailyDigestResponse | None:
 
 
 def list_connector_health(session: Session) -> list[ConnectorHealthResponse]:
-    rows = session.scalars(select(ConnectorHealth).order_by(ConnectorHealth.connector_name.asc())).all()
-    return [
-        ConnectorHealthResponse(
-            connector_name=row.connector_name,
-            status=row.status,
-            consecutive_failures=row.consecutive_failures,
-            recent_successes=row.recent_successes,
-            recent_failures=row.recent_failures,
-            trust_score=row.trust_score,
-            circuit_state=row.circuit_state,
-            disabled_until=row.disabled_until,
-            last_success_at=row.last_success_at,
-            last_failure_at=row.last_failure_at,
-            last_error=row.last_error,
-            last_failure_classification=row.last_failure_classification,
-            last_mode=row.last_mode,
-            last_item_count=row.last_item_count,
-            quarantine_count=row.quarantine_count,
-            approved_for_unattended=row.approved_for_unattended,
-            last_freshness_lag_seconds=row.last_freshness_lag_seconds,
+    settings = get_settings()
+    rows = {
+        row.connector_name: row
+        for row in session.scalars(select(ConnectorHealth).order_by(ConnectorHealth.connector_name.asc())).all()
+    }
+    connector_names = sorted(set(rows) | set(CONNECTOR_CONFIG_KEYS))
+    responses: list[ConnectorHealthResponse] = []
+    for name in connector_names:
+        row = rows.get(name)
+        if row is None:
+            blocked_reason = connector_blocked_reason(name, None, settings)
+            responses.append(
+                ConnectorHealthResponse(
+                    connector_name=name,
+                    status="not_configured" if blocked_reason in {"disabled", "missing_tokens"} else "unknown",
+                    blocked_reason=blocked_reason,
+                    config_key=CONNECTOR_CONFIG_KEYS.get(name),
+                    consecutive_failures=0,
+                    recent_successes=0,
+                    recent_failures=0,
+                    trust_score=0.0,
+                    circuit_state="closed",
+                    approved_for_unattended=False,
+                )
+            )
+            continue
+        responses.append(
+            ConnectorHealthResponse(
+                connector_name=row.connector_name,
+                status=row.status,
+                blocked_reason=connector_blocked_reason(row.connector_name, row, settings),
+                config_key=CONNECTOR_CONFIG_KEYS.get(row.connector_name),
+                consecutive_failures=row.consecutive_failures,
+                recent_successes=row.recent_successes,
+                recent_failures=row.recent_failures,
+                trust_score=row.trust_score,
+                circuit_state=row.circuit_state,
+                disabled_until=row.disabled_until,
+                last_success_at=row.last_success_at,
+                last_failure_at=row.last_failure_at,
+                last_error=row.last_error,
+                last_failure_classification=row.last_failure_classification,
+                last_mode=row.last_mode,
+                last_item_count=row.last_item_count,
+                quarantine_count=row.quarantine_count,
+                approved_for_unattended=row.approved_for_unattended,
+                last_freshness_lag_seconds=row.last_freshness_lag_seconds,
+            )
         )
-        for row in rows
-    ]
+    return responses

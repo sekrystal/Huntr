@@ -34,6 +34,7 @@ def normalize_greenhouse_job(job: dict) -> ListingRecord:
             "provider": "greenhouse",
             "page_text": job.get("page_text", ""),
             "source_queries": job.get("source_queries", []),
+            "discovery_source": job.get("discovery_source"),
             "company_domain": job.get("company_domain"),
             "source_board_token": job.get("source_board_token"),
             "internal_job_id": job.get("internal_job_id"),
@@ -68,7 +69,9 @@ def normalize_ashby_job(job: dict, org_name: Optional[str] = None) -> ListingRec
             "provider": "ashby",
             "page_text": job.get("page_text", ""),
             "source_queries": job.get("source_queries", []),
+            "discovery_source": job.get("discovery_source"),
             "company_domain": job.get("companyDomain"),
+            "source_org_key": job.get("source_org_key"),
             "source_updated_at": job.get("updatedAt"),
         },
     )

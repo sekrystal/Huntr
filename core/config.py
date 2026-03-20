@@ -21,8 +21,8 @@ class Settings(BaseSettings):
         default=f"sqlite:///{(APP_ROOT / 'opportunity_scout.db').as_posix()}"
     )
     demo_mode: bool = True
-    autonomy_enabled: bool = True
-    greenhouse_enabled: bool = True
+    autonomy_enabled: bool = False
+    greenhouse_enabled: bool = False
     sync_interval_seconds: int = 900
     worker_interval_seconds: int = 900
     interactive_worker_interval_seconds: int = 15
@@ -53,6 +53,10 @@ class Settings(BaseSettings):
     x_bearer_token: Optional[str] = None
     greenhouse_board_tokens: str = ""
     ashby_org_keys: str = ""
+    search_discovery_enabled: bool = False
+    search_discovery_provider: str = "duckduckgo_html"
+    search_discovery_query_limit: int = 8
+    search_discovery_result_limit: int = 5
 
     model_config = SettingsConfigDict(
         env_file=APP_ROOT / ".env",

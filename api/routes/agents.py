@@ -9,6 +9,8 @@ from core.schemas import (
     AgentRunRequest,
     AgentRunResponse,
     AutonomyStatusResponse,
+    ConnectorResetRequest,
+    ConnectorResetResponse,
     InvestigationsResponse,
     LearningViewResponse,
     RuntimeControlRequest,
@@ -17,6 +19,7 @@ from core.schemas import (
 from scripts.seed_demo_data import main as seed_demo_main
 from services.activity import list_agent_activities, log_agent_failure
 from services.autonomy import build_autonomy_health, build_daily_digest, build_latest_run_digest, list_connector_health
+from services.connector_admin import reset_connector_health
 from services.investigations import list_investigations
 from services.learning import build_learning_view
 from services.pipeline import (
@@ -74,6 +77,23 @@ def set_runtime_control_state(payload: RuntimeControlRequest, db: Session = Depe
     control = set_runtime_action(db, action)
     db.commit()
     return runtime_control_payload(control)
+
+
+@router.post("/connectors/{connector_name}/reset-health", response_model=ConnectorResetResponse)
+def reset_connector_state(
+    connector_name: str,
+    payload: ConnectorResetRequest,
+    db: Session = Depends(get_db),
+) -> ConnectorResetResponse:
+    if not payload.confirm:
+        raise HTTPException(status_code=400, detail="Set confirm=true to intentionally reset persisted connector health.")
+    row = reset_connector_health(db, connector_name)
+    db.commit()
+    return ConnectorResetResponse(
+        connector_name=connector_name,
+        status=row.status,
+        summary=f"Reset persisted health state for {connector_name}. Restart API and worker after env changes before testing again.",
+    )
 
 
 @router.post("/agents/run", response_model=AgentRunResponse)

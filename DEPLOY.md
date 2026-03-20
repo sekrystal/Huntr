@@ -78,6 +78,7 @@ Set at minimum:
 - `GREENHOUSE_ENABLED=false`
 - `WORKER_INTERVAL_SECONDS=900`
 - `GREENHOUSE_BOARD_TOKENS=stripe,airtable`
+- `SEARCH_DISCOVERY_ENABLED=false`
 - `ALERTS_ENABLED=true`
 - `SLACK_WEBHOOK_URL=...`
 
@@ -89,6 +90,8 @@ For first Linux bring-up, keep autonomy and Greenhouse disabled until:
 4. you are ready to watch the first worker cycle
 
 Then enable `AUTONOMY_ENABLED=true` and `GREENHOUSE_ENABLED=true`.
+
+Only enable `SEARCH_DISCOVERY_ENABLED=true` after the basic Greenhouse path is healthy and you want broader ATS discovery. Search discovery expands ATS surfaces; it does not replace the Greenhouse/Ashby validation path.
 
 ## 8. Initialize The Database
 
@@ -127,6 +130,17 @@ sudo systemctl status opportunity-scout-api.service --no-pager
 sudo systemctl status opportunity-scout-worker.service --no-pager
 sudo systemctl status opportunity-scout-ui.service --no-pager
 ```
+
+If you change `/etc/opportunity-scout/opportunity-scout.env`, restart in this order:
+
+```bash
+sudo systemctl stop opportunity-scout-worker.service
+sudo systemctl restart opportunity-scout-api.service
+sudo systemctl restart opportunity-scout-worker.service
+sudo systemctl restart opportunity-scout-ui.service
+```
+
+The API and worker cache config in-process, and the DB engine is bound at process start.
 
 ## 12. Optional Nginx Reverse Proxy
 

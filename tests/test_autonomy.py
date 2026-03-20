@@ -20,7 +20,8 @@ from core.models import (
     WatchlistItem,
 )
 from services.activity import log_agent_activity
-from services.autonomy import build_autonomy_health, build_latest_run_digest
+from services.autonomy import build_autonomy_health, build_latest_run_digest, list_connector_health
+from services.connector_admin import reset_connector_health
 from services.connectors_health import record_connector_success, run_connector_fetch
 from services.sync import sync_all
 from services.governance import evaluate_learning_governance
@@ -223,7 +224,7 @@ def test_sync_all_prevents_duplicate_listings_across_repeated_greenhouse_polls(m
     session = build_session()
     get_candidate_profile(session)
 
-    def greenhouse_fetch(self, require_live: bool = False):
+    def greenhouse_fetch(self, require_live: bool = False, board_tokens_override=None, discovery_queries=None):
         return (
             [
                 {
@@ -242,7 +243,7 @@ def test_sync_all_prevents_duplicate_listings_across_repeated_greenhouse_polls(m
         )
 
     monkeypatch.setattr("connectors.greenhouse.GreenhouseConnector.fetch", greenhouse_fetch)
-    monkeypatch.setattr("connectors.ashby.AshbyConnector.fetch", lambda self, require_live=False: ([], False))
+    monkeypatch.setattr("connectors.ashby.AshbyConnector.fetch", lambda self, require_live=False, orgs_override=None, discovery_queries=None: ([], False))
     monkeypatch.setattr("connectors.x_search.XSearchConnector.fetch", lambda self, queries, require_live=False: ([], False))
 
     sync_all(session, enabled_connectors={"greenhouse"})
@@ -250,3 +251,96 @@ def test_sync_all_prevents_duplicate_listings_across_repeated_greenhouse_polls(m
 
     assert session.query(Listing).count() == 1
     assert session.query(Lead).count() == 1
+
+
+def test_connector_health_reports_missing_tokens_for_greenhouse(monkeypatch) -> None:
+    monkeypatch.setenv("GREENHOUSE_ENABLED", "true")
+    monkeypatch.setenv("GREENHOUSE_BOARD_TOKENS", "")
+    from core.config import get_settings
+
+    get_settings.cache_clear()
+    session = build_session()
+    rows = list_connector_health(session)
+    greenhouse = next(item for item in rows if item.connector_name == "greenhouse")
+    assert greenhouse.blocked_reason == "missing_tokens"
+    assert greenhouse.config_key == "GREENHOUSE_BOARD_TOKENS"
+
+
+def test_reset_connector_health_clears_open_circuit() -> None:
+    session = build_session()
+
+    def failing_fetch():
+        raise RuntimeError("boom")
+
+    for _ in range(3):
+        run_connector_fetch(session, "greenhouse", failing_fetch, date_fields=["first_published"], retries=0)
+
+    reset = reset_connector_health(session, "greenhouse")
+    assert reset.status == "unknown"
+    assert reset.circuit_state == "closed"
+    assert reset.disabled_until is None
+    assert reset.consecutive_failures == 0
+
+
+def test_search_discovery_expands_greenhouse_tokens_without_bypassing_pipeline(monkeypatch) -> None:
+    session = build_session()
+    profile = get_candidate_profile(session)
+    profile.core_titles_json = ["operations lead"]
+    profile.preferred_domains_json = ["developer tools"]
+    session.flush()
+
+    monkeypatch.setenv("SEARCH_DISCOVERY_ENABLED", "true")
+    monkeypatch.setenv("GREENHOUSE_ENABLED", "true")
+    monkeypatch.setenv("GREENHOUSE_BOARD_TOKENS", "")
+    from core.config import get_settings
+
+    get_settings.cache_clear()
+
+    def search_fetch(self, queries, require_live=False):
+        from connectors.search_web import SearchDiscoveryResult
+
+        return (
+            [
+                SearchDiscoveryResult(
+                    query_text=queries[0],
+                    title="Ops Lead",
+                    url="https://job-boards.greenhouse.io/example/jobs/9001",
+                )
+            ],
+            True,
+        )
+
+    def greenhouse_fetch(self, require_live=False, board_tokens_override=None, discovery_queries=None):
+        assert board_tokens_override == ["example"]
+        assert discovery_queries is not None
+        assert "example" in discovery_queries
+        return (
+            [
+                {
+                    "id": 9001,
+                    "title": "Strategic Programs Lead",
+                    "absolute_url": "https://job-boards.greenhouse.io/example/jobs/9001",
+                    "location": {"name": "San Francisco, CA"},
+                    "first_published": datetime.utcnow().isoformat(),
+                    "updated_at": datetime.utcnow().isoformat(),
+                    "content": "Own operations systems and planning cadence.",
+                    "company_name": "ExampleCo",
+                    "company_domain": "example.co",
+                    "source_board_token": "example",
+                    "discovery_source": "search_web",
+                    "source_queries": discovery_queries["example"],
+                }
+            ],
+            True,
+        )
+
+    monkeypatch.setattr("connectors.search_web.SearchDiscoveryConnector.fetch", search_fetch)
+    monkeypatch.setattr("connectors.greenhouse.GreenhouseConnector.fetch", greenhouse_fetch)
+    monkeypatch.setattr("connectors.ashby.AshbyConnector.fetch", lambda self, require_live=False, orgs_override=None, discovery_queries=None: ([], False))
+    monkeypatch.setattr("connectors.x_search.XSearchConnector.fetch", lambda self, queries, require_live=False: ([], False))
+
+    sync_all(session, enabled_connectors={"greenhouse"})
+
+    lead = session.query(Lead).one()
+    assert lead.evidence_json["discovery_source"] == "search_web"
+    assert lead.evidence_json["source_platform"] == "greenhouse+search_web"

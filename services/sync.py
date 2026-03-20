@@ -10,9 +10,15 @@ from sqlalchemy.orm import Session
 
 from connectors.ashby import AshbyConnector
 from connectors.greenhouse import GreenhouseConnector
+from connectors.search_web import (
+    SearchDiscoveryConnector,
+    build_search_queries,
+    extract_discovered_ashby_orgs,
+    extract_discovered_greenhouse_tokens,
+)
 from connectors.x_search import XSearchConnector
 from core.config import get_settings
-from core.models import Application, Investigation, Lead, Listing, RecheckQueue, Signal, SourceQuery
+from core.models import Application, Investigation, Lead, Listing, RecheckQueue, Signal, SourceQuery, WatchlistItem
 from core.schemas import ListingRecord, LeadResponse, SignalRecord, StatsResponse, SyncResult
 from services.activity import append_lead_agent_trace
 from services.ai_judges import judge_critic_with_ai, judge_fit_with_ai
@@ -468,6 +474,10 @@ def _upsert_lead(
 
     score_breakdown = {key: value for key, value in breakdown.items() if key not in {"matched_profile_fields"}}
     evidence_json = dict(evidence_json)
+    discovery_source = evidence_json.get("discovery_source") or ((listing.metadata_json or {}).get("discovery_source") if listing else None)
+    source_platform = "x_demo" if source_type == "x" else source_type
+    if discovery_source:
+        source_platform = f"{source_type}+{discovery_source}"
     evidence_json.update(
         {
             "matched_profile_fields": breakdown.get("matched_profile_fields", []),
@@ -478,7 +488,8 @@ def _upsert_lead(
             "confidence_status": breakdown["confidence_label"],
             "listing_status": listing_status,
             "source_type": source_type,
-            "source_platform": "x_demo" if source_type == "x" else source_type,
+            "source_platform": source_platform,
+            "discovery_source": discovery_source,
             "company_domain": company_domain,
             "url": listing_url,
             "first_published_at": listing.first_published_at.isoformat() if listing and listing.first_published_at else None,
@@ -553,27 +564,67 @@ def sync_all(
 
     greenhouse_connector = GreenhouseConnector()
     ashby_connector = AshbyConnector()
+    search_connector = SearchDiscoveryConnector()
     x_connector = XSearchConnector()
 
     greenhouse_jobs: list[dict] = []
     ashby_jobs: list[dict] = []
+    search_results = []
     x_raw_signals: list[dict] = []
     greenhouse_live = False
     ashby_live = False
+    search_live = False
     x_live = False
+    discovered_greenhouse_queries: dict[str, list[str]] = {}
+    discovered_ashby_queries: dict[str, list[str]] = {}
+
+    watchlist_values = [
+        item.value
+        for item in session.scalars(
+            select(WatchlistItem).where(WatchlistItem.status.in_(["active", "proposed"])).order_by(WatchlistItem.updated_at.desc())
+        ).all()
+    ]
+    search_queries = build_search_queries(
+        core_titles=profile.core_titles_json or profile.preferred_titles_json or [],
+        adjacent_titles=profile.adjacent_titles_json or [],
+        preferred_domains=profile.preferred_domains_json or [],
+        watchlist_items=watchlist_values,
+    )
+
+    if settings.search_discovery_enabled and search_queries:
+        search_results, search_live, _ = run_connector_fetch(
+            session,
+            "search_web",
+            partial(search_connector.fetch, search_queries, "search_web" in strict_live_connectors),
+            date_fields=[],
+        )
+        discovered_greenhouse_queries = extract_discovered_greenhouse_tokens(search_results)
+        discovered_ashby_queries = extract_discovered_ashby_orgs(search_results)
 
     if "greenhouse" in enabled_connectors:
+        greenhouse_tokens = list(dict.fromkeys(settings.greenhouse_tokens + list(discovered_greenhouse_queries)))
         greenhouse_jobs, greenhouse_live, _ = run_connector_fetch(
             session,
             "greenhouse",
-            partial(greenhouse_connector.fetch, "greenhouse" in strict_live_connectors),
+            partial(
+                greenhouse_connector.fetch,
+                "greenhouse" in strict_live_connectors,
+                greenhouse_tokens,
+                discovered_greenhouse_queries,
+            ),
             date_fields=["first_published", "updated_at"],
         )
     if "ashby" in enabled_connectors:
+        ashby_orgs = list(dict.fromkeys(settings.ashby_orgs + list(discovered_ashby_queries)))
         ashby_jobs, ashby_live, _ = run_connector_fetch(
             session,
             "ashby",
-            partial(ashby_connector.fetch, "ashby" in strict_live_connectors),
+            partial(
+                ashby_connector.fetch,
+                "ashby" in strict_live_connectors,
+                ashby_orgs,
+                discovered_ashby_queries,
+            ),
             date_fields=["publishedDate"],
         )
     if "x_search" in enabled_connectors:
@@ -748,6 +799,7 @@ def sync_all(
             evidence_json={
                 "snippets": [(listing.description_text or "")[:240]],
                 "source_queries": query_texts,
+                "discovery_source": (listing.metadata_json or {}).get("discovery_source"),
             },
         )
         leads_created += 1 if created else 0
@@ -780,7 +832,7 @@ def sync_all(
         leads_created=leads_created,
         leads_updated=leads_updated,
         rechecks_queued=rechecks_queued,
-        live_mode_used=any([greenhouse_live, ashby_live, x_live]),
+        live_mode_used=any([greenhouse_live, ashby_live, search_live, x_live]),
     )
 
 

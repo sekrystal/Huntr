@@ -49,11 +49,24 @@ class AshbyConnector:
         self.settings = get_settings()
         self.last_error: str | None = None
 
-    def fetch(self, require_live: bool = False) -> tuple[list[dict], bool]:
-        if self.settings.ashby_orgs:
+    def fetch(
+        self,
+        require_live: bool = False,
+        orgs_override: list[str] | None = None,
+        discovery_queries: dict[str, list[str]] | None = None,
+    ) -> tuple[list[dict], bool]:
+        orgs = orgs_override or self.settings.ashby_orgs
+        discovery_queries = discovery_queries or {}
+        if orgs:
             try:
                 self.last_error = None
-                return self._fetch_live(self.settings.ashby_orgs), True
+                jobs = self._fetch_live(orgs)
+                for job in jobs:
+                    org = job.get("source_org_key")
+                    if org and org in discovery_queries:
+                        job["source_queries"] = list(dict.fromkeys(discovery_queries[org]))
+                        job["discovery_source"] = "search_web"
+                return jobs, True
             except Exception as exc:
                 self.last_error = str(exc)
                 logger.warning("Falling back to mock Ashby data: %s", exc)
@@ -80,5 +93,6 @@ class AshbyConnector:
             payload = response.json()
             for job in payload.get("data", {}).get("jobBoard", {}).get("jobs", []):
                 job["companyName"] = org.replace("-", " ").title()
+                job["source_org_key"] = org
                 jobs.append(job)
         return jobs

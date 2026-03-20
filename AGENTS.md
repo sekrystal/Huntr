@@ -15,6 +15,7 @@ Any code agent working in this repo must preserve these product truths:
 - working PDF resume parsing
 - editable candidate profile
 - deterministic runtime control for worker autonomy
+- operator-visible connector health and explicit connector recovery
 - clean distinction between `signals`, `listings`, and `leads`
 - save-for-later and application tracking
 - Clay-like, table-first workbench UI
@@ -42,6 +43,7 @@ Expected agent flow:
 - Keep seeded demo data fresh, legible, and relevant to the target profile.
 - Hide expired, stale, underqualified, and overqualified leads by default.
 - Keep Critic as the final visibility gate; Ranker may order visible leads but must not override suppression.
+- Keep search discovery as a recall-expansion layer only; it must not bypass ATS normalization, Critic suppression, or ranking gates.
 - Every surfaced lead must be explainable in plain language.
 - If a fix changes behavior, update the relevant documentation or agent artifacts in the same pass.
 
