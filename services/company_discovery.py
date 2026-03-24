@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from connectors.search_web import SearchDiscoveryResult
 from core.config import Settings, get_settings
-from core.models import Application, CompanyDiscovery, Lead
+from core.models import AgentRun, Application, CompanyDiscovery, Lead
 from core.schemas import CompanyDiscoveryRowResponse, DiscoveryStatusResponse
 
 
@@ -325,6 +325,57 @@ def record_expansion_attempt(
         )
 
 
+def _company_discovery_row_response(row: CompanyDiscovery) -> CompanyDiscoveryRowResponse:
+    return CompanyDiscoveryRowResponse(
+        company_name=row.company_name,
+        company_domain=row.company_domain,
+        normalized_company_key=row.normalized_company_key,
+        discovery_source=row.discovery_source,
+        discovery_query=row.discovery_query,
+        first_discovered_at=row.first_discovered_at,
+        last_discovered_at=row.last_discovered_at,
+        last_expanded_at=row.last_expanded_at,
+        board_type=row.board_type,
+        board_locator=row.board_locator,
+        surface_provenance=(row.metadata_json or {}).get("surface_provenance"),
+        source_lineage=(row.metadata_json or {}).get("source_lineage"),
+        expansion_status=row.expansion_status,
+        expansion_attempts=row.expansion_attempts,
+        last_expansion_result_count=row.last_expansion_result_count,
+        visible_yield_count=row.visible_yield_count,
+        suppressed_yield_count=row.suppressed_yield_count,
+        location_filtered_count=row.location_filtered_count,
+        utility_score=row.utility_score,
+        blocked_reason=row.blocked_reason,
+        metadata_json=row.metadata_json or {},
+    )
+
+
+def _serialize_agent_run(row: AgentRun | None) -> dict[str, object] | None:
+    if row is None:
+        return None
+    return {
+        "agent_name": row.agent_name,
+        "action": row.action,
+        "summary": row.summary,
+        "created_at": row.created_at.isoformat(),
+        "metadata_json": row.metadata_json or {},
+    }
+
+
+def _latest_agent_run(
+    session: Session,
+    *,
+    agent_name: str,
+    action: str | None = None,
+) -> dict[str, object] | None:
+    query = select(AgentRun).where(AgentRun.agent_name == agent_name)
+    if action is not None:
+        query = query.where(AgentRun.action == action)
+    row = session.scalar(query.order_by(AgentRun.created_at.desc(), AgentRun.id.desc()).limit(1))
+    return _serialize_agent_run(row)
+
+
 def build_discovery_status(session: Session) -> DiscoveryStatusResponse:
     from services.discovery_agents import recent_discovery_agent_runs, summarize_expansion_actions
 
@@ -335,16 +386,49 @@ def build_discovery_status(session: Session) -> DiscoveryStatusResponse:
         .order_by(CompanyDiscovery.last_discovered_at.desc(), CompanyDiscovery.utility_score.desc())
         .limit(25)
     ).all()
-    planner_run = next((run for run in recent_runs if run["agent_name"] == "Planner"), None)
-    triage_run = next((run for run in recent_runs if run["agent_name"] == "Triage"), None)
-    learning_run = next((run for run in recent_runs if run["agent_name"] == "Learning"), None)
-    latest_metrics_run = next(
-        (
-            run
-            for run in recent_runs
-            if run["agent_name"] == "Discovery" and run["action"] == "recorded discovery cycle metrics"
-        ),
-        None,
+    expansion_rows = session.scalars(
+        select(CompanyDiscovery)
+        .where(CompanyDiscovery.last_expanded_at.is_not(None))
+        .order_by(CompanyDiscovery.last_expanded_at.desc(), CompanyDiscovery.id.desc())
+        .limit(25)
+    ).all()
+    successful_expansion_rows = session.scalars(
+        select(CompanyDiscovery)
+        .where(CompanyDiscovery.last_expansion_result_count > 0)
+        .order_by(
+            func.coalesce(CompanyDiscovery.last_expanded_at, CompanyDiscovery.last_discovered_at).desc(),
+            CompanyDiscovery.id.desc(),
+        )
+        .limit(10)
+    ).all()
+    visible_yield_rows = session.scalars(
+        select(CompanyDiscovery)
+        .where(CompanyDiscovery.visible_yield_count > 0)
+        .order_by(
+            func.coalesce(CompanyDiscovery.last_expanded_at, CompanyDiscovery.last_discovered_at).desc(),
+            CompanyDiscovery.id.desc(),
+        )
+        .limit(10)
+    ).all()
+    blocked_or_cooled_down_rows = session.scalars(
+        select(CompanyDiscovery)
+        .where(
+            (CompanyDiscovery.blocked_reason.is_not(None))
+            | (CompanyDiscovery.expansion_status.in_(["empty", "investigate"]))
+        )
+        .order_by(
+            func.coalesce(CompanyDiscovery.last_expanded_at, CompanyDiscovery.last_discovered_at).desc(),
+            CompanyDiscovery.id.desc(),
+        )
+        .limit(10)
+    ).all()
+    planner_run = _latest_agent_run(session, agent_name="Planner", action="planned discovery cycle")
+    triage_run = _latest_agent_run(session, agent_name="Triage", action="prioritized discovery candidates")
+    learning_run = _latest_agent_run(session, agent_name="Learning", action="updated discovery priors")
+    latest_metrics_run = _latest_agent_run(
+        session,
+        agent_name="Discovery",
+        action="recorded discovery cycle metrics",
     )
     geography_rejections = session.scalars(
         select(Lead)
@@ -364,64 +448,10 @@ def build_discovery_status(session: Session) -> DiscoveryStatusResponse:
         expanded_last_24h=session.scalar(select(func.count(CompanyDiscovery.id)).where(CompanyDiscovery.last_expanded_at >= since)) or 0,
         latest_planner_run=planner_run,
         recent_plans=recent_runs,
-        recent_expansions=summarize_expansion_actions(rows),
-        recent_successful_expansions=[
-            item for item in summarize_expansion_actions(rows) if int(item.get("last_expansion_result_count", 0) or 0) > 0
-        ][:10],
-        recent_visible_yield=[
-            CompanyDiscoveryRowResponse(
-                company_name=row.company_name,
-                company_domain=row.company_domain,
-                normalized_company_key=row.normalized_company_key,
-                discovery_source=row.discovery_source,
-                discovery_query=row.discovery_query,
-                first_discovered_at=row.first_discovered_at,
-                last_discovered_at=row.last_discovered_at,
-                last_expanded_at=row.last_expanded_at,
-                board_type=row.board_type,
-                board_locator=row.board_locator,
-                surface_provenance=(row.metadata_json or {}).get("surface_provenance"),
-                source_lineage=(row.metadata_json or {}).get("source_lineage"),
-                expansion_status=row.expansion_status,
-                expansion_attempts=row.expansion_attempts,
-                last_expansion_result_count=row.last_expansion_result_count,
-                visible_yield_count=row.visible_yield_count,
-                suppressed_yield_count=row.suppressed_yield_count,
-                location_filtered_count=row.location_filtered_count,
-                utility_score=row.utility_score,
-                blocked_reason=row.blocked_reason,
-                metadata_json=row.metadata_json or {},
-            )
-            for row in rows
-            if row.visible_yield_count > 0
-        ][:10],
-        blocked_or_cooled_down=[
-            CompanyDiscoveryRowResponse(
-                company_name=row.company_name,
-                company_domain=row.company_domain,
-                normalized_company_key=row.normalized_company_key,
-                discovery_source=row.discovery_source,
-                discovery_query=row.discovery_query,
-                first_discovered_at=row.first_discovered_at,
-                last_discovered_at=row.last_discovered_at,
-                last_expanded_at=row.last_expanded_at,
-                board_type=row.board_type,
-                board_locator=row.board_locator,
-                surface_provenance=(row.metadata_json or {}).get("surface_provenance"),
-                source_lineage=(row.metadata_json or {}).get("source_lineage"),
-                expansion_status=row.expansion_status,
-                expansion_attempts=row.expansion_attempts,
-                last_expansion_result_count=row.last_expansion_result_count,
-                visible_yield_count=row.visible_yield_count,
-                suppressed_yield_count=row.suppressed_yield_count,
-                location_filtered_count=row.location_filtered_count,
-                utility_score=row.utility_score,
-                blocked_reason=row.blocked_reason,
-                metadata_json=row.metadata_json or {},
-            )
-            for row in rows
-            if row.blocked_reason or row.expansion_status in {"empty", "investigate"}
-        ][:10],
+        recent_expansions=summarize_expansion_actions(expansion_rows),
+        recent_successful_expansions=summarize_expansion_actions(successful_expansion_rows),
+        recent_visible_yield=[_company_discovery_row_response(row) for row in visible_yield_rows],
+        blocked_or_cooled_down=[_company_discovery_row_response(row) for row in blocked_or_cooled_down_rows],
         recent_greenhouse_tokens=[
             {
                 "company_name": row.company_name,
@@ -486,32 +516,7 @@ def build_discovery_status(session: Session) -> DiscoveryStatusResponse:
             "learning": bool((learning_run or {}).get("metadata_json", {}).get("used_openai")),
         },
         cycle_metrics=dict((latest_metrics_run or {}).get("metadata_json", {}).get("cycle_metrics", {})),
-        recent_items=[
-            CompanyDiscoveryRowResponse(
-                company_name=row.company_name,
-                company_domain=row.company_domain,
-                normalized_company_key=row.normalized_company_key,
-                discovery_source=row.discovery_source,
-                discovery_query=row.discovery_query,
-                first_discovered_at=row.first_discovered_at,
-                last_discovered_at=row.last_discovered_at,
-                last_expanded_at=row.last_expanded_at,
-                board_type=row.board_type,
-                board_locator=row.board_locator,
-                surface_provenance=(row.metadata_json or {}).get("surface_provenance"),
-                source_lineage=(row.metadata_json or {}).get("source_lineage"),
-                expansion_status=row.expansion_status,
-                expansion_attempts=row.expansion_attempts,
-                last_expansion_result_count=row.last_expansion_result_count,
-                visible_yield_count=row.visible_yield_count,
-                suppressed_yield_count=row.suppressed_yield_count,
-                location_filtered_count=row.location_filtered_count,
-                utility_score=row.utility_score,
-                blocked_reason=row.blocked_reason,
-                metadata_json=row.metadata_json or {},
-            )
-            for row in rows
-        ],
+        recent_items=[_company_discovery_row_response(row) for row in rows],
     )
 
 

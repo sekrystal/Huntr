@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -248,3 +248,121 @@ def test_discovery_status_returns_recent_items() -> None:
     assert status.cycle_metrics["discovered_companies_new_count"] == 2
     assert status.cycle_metrics["accepted_urls_sample"] == ["https://job-boards.greenhouse.io/example"]
     assert status.recent_successful_expansions
+
+
+def test_discovery_status_uses_latest_relevant_runs_beyond_recent_window() -> None:
+    session = _session()
+    profile = _profile(session)
+    result = SearchDiscoveryResult(
+        query_text='"chief of staff" startup careers greenhouse',
+        title="Chief of Staff - Example",
+        url="https://job-boards.greenhouse.io/example/jobs/1",
+    )
+    candidate = candidate_from_search_result(result)
+    assert candidate is not None
+    score, reasons, _ = triage_candidate(session, candidate, profile, configured_boards=set())
+    row, _ = upsert_discovered_company(session, candidate, score, reasons)
+    record_expansion_attempt(row, result_count=0, visible_yield=0, suppressed_yield=0, location_filtered=0)
+
+    metrics_run = AgentRun(
+        agent_name="Discovery",
+        action="recorded discovery cycle metrics",
+        summary="Zero-yield discovery cycle recorded.",
+        affected_count=0,
+        metadata_json={
+            "cycle_metrics": {
+                "discovered_companies_new_count": 0,
+                "agent_discovered_visible_leads_count": 0,
+                "accepted_results_count": 0,
+            }
+        },
+    )
+    metrics_run.created_at = datetime.utcnow() - timedelta(minutes=9)
+    session.add(metrics_run)
+
+    planner_run = AgentRun(
+        agent_name="Planner",
+        action="planned discovery cycle",
+        summary="Latest planner run.",
+        affected_count=1,
+        metadata_json={"queries": ["ops careers"], "used_openai": True},
+    )
+    planner_run.created_at = datetime.utcnow() - timedelta(minutes=8)
+    session.add(planner_run)
+
+    filler_agents = ["Learning", "Triage", "Planner", "Learning", "Triage", "Planner", "Learning", "Triage"]
+    for index, agent_name in enumerate(filler_agents):
+        filler = AgentRun(
+            agent_name=agent_name,
+            action=f"filler run {index}",
+            summary=f"{agent_name} filler run {index}",
+            affected_count=index,
+            metadata_json={"used_openai": index % 2 == 0},
+        )
+        filler.created_at = datetime.utcnow() - timedelta(minutes=7 - index)
+        session.add(filler)
+
+    latest_learning = AgentRun(
+        agent_name="Learning",
+        action="updated discovery priors",
+        summary="Latest learning run.",
+        affected_count=1,
+        metadata_json={"next_queries": ["remote ops careers"], "used_openai": False},
+    )
+    latest_learning.created_at = datetime.utcnow() + timedelta(minutes=1)
+    session.add(latest_learning)
+
+    latest_triage = AgentRun(
+        agent_name="Triage",
+        action="prioritized discovery candidates",
+        summary="Latest triage run.",
+        affected_count=1,
+        metadata_json={"used_openai": True},
+    )
+    latest_triage.created_at = datetime.utcnow() + timedelta(minutes=2)
+    session.add(latest_triage)
+    session.commit()
+
+    status = build_discovery_status(session)
+
+    assert status.latest_planner_run is not None
+    assert status.latest_planner_run["summary"] == "Latest planner run."
+    assert status.latest_openai_usage == {"planner": True, "triage": True, "learning": False}
+    assert status.cycle_metrics["agent_discovered_visible_leads_count"] == 0
+    assert status.cycle_metrics["accepted_results_count"] == 0
+
+
+def test_discovery_status_includes_latest_empty_expansion_for_older_company() -> None:
+    session = _session()
+    profile = _profile(session)
+
+    old_result = SearchDiscoveryResult(
+        query_text='"chief of staff" startup careers greenhouse',
+        title="Chief of Staff - Older",
+        url="https://job-boards.greenhouse.io/older/jobs/1",
+    )
+    old_candidate = candidate_from_search_result(old_result)
+    assert old_candidate is not None
+    old_score, old_reasons, _ = triage_candidate(session, old_candidate, profile, configured_boards=set())
+    old_row, _ = upsert_discovered_company(session, old_candidate, old_score, old_reasons)
+    old_row.last_discovered_at = datetime.utcnow() - timedelta(days=40)
+    record_expansion_attempt(old_row, result_count=0, blocked_reason="cooldown")
+
+    for index in range(30):
+        result = SearchDiscoveryResult(
+            query_text=f'"business operations" startup careers greenhouse {index}',
+            title=f"Business Operations Lead - Fresh {index}",
+            url=f"https://job-boards.greenhouse.io/fresh-{index}/jobs/{index}",
+        )
+        candidate = candidate_from_search_result(result)
+        assert candidate is not None
+        score, reasons, _ = triage_candidate(session, candidate, profile, configured_boards=set())
+        row, _ = upsert_discovered_company(session, candidate, score, reasons)
+        row.last_discovered_at = datetime.utcnow() - timedelta(minutes=index)
+
+    session.commit()
+
+    status = build_discovery_status(session)
+
+    assert old_row.company_name not in {item.company_name for item in status.recent_items}
+    assert old_row.company_name in {item.company_name for item in status.blocked_or_cooled_down}
