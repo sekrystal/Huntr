@@ -135,6 +135,8 @@ def test_resume_preview_builds_structured_profile_from_upload() -> None:
 
     assert preview["status"] == "complete"
     assert preview["missing_fields"] == []
+    assert preview["candidate_profile"]["extracted_summary_json"]["resume_filename"] == "resume.txt"
+    assert preview["candidate_profile"]["extracted_summary_json"]["extraction_status"] == "complete"
     assert preview["candidate_profile"]["structured_profile_json"]["targeting"]["preferred_titles"]
     assert "chief of staff" in preview["candidate_profile"]["preferred_titles_json"]
 
@@ -145,5 +147,7 @@ def test_resume_preview_marks_partial_extraction_without_failing() -> None:
     assert preview["status"] == "partial"
     assert "preferred titles" in preview["missing_fields"]
     assert "preferred domains" in preview["missing_fields"]
+    assert preview["candidate_profile"]["extracted_summary_json"]["extraction_status"] == "partial"
+    assert preview["candidate_profile"]["extracted_summary_json"]["missing_fields"] == preview["missing_fields"]
     assert preview["candidate_profile"]["structured_profile_json"]["targeting"]["preferred_titles"]
     assert preview["warnings"]

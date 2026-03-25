@@ -78,6 +78,39 @@ def parse_csv(value: str) -> list[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
 
 
+def get_profile_form_source(profile: dict[str, Any], latest_resume_ingest: Optional[dict[str, Any]]) -> dict[str, Any]:
+    if latest_resume_ingest and latest_resume_ingest.get("candidate_profile"):
+        return latest_resume_ingest["candidate_profile"]
+    return profile
+
+
+def build_profile_update_payload(
+    profile: dict[str, Any],
+    form_source: dict[str, Any],
+    form_values: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "profile_schema_version": form_source.get("profile_schema_version", profile.get("profile_schema_version", "v1")),
+        "name": form_values["name"],
+        "raw_resume_text": form_source.get("raw_resume_text", profile.get("raw_resume_text", "")),
+        "extracted_summary_json": form_source.get("extracted_summary_json", profile.get("extracted_summary_json", {})),
+        "preferred_titles_json": parse_csv(form_values["preferred_titles"]),
+        "adjacent_titles_json": parse_csv(form_values["adjacent_titles"]),
+        "excluded_titles_json": parse_csv(form_values["excluded_titles"]),
+        "preferred_domains_json": parse_csv(form_values["preferred_domains"]),
+        "excluded_companies_json": parse_csv(form_values["excluded_companies"]),
+        "preferred_locations_json": parse_csv(form_values["preferred_locations"]),
+        "seniority_guess": form_source.get("seniority_guess", profile.get("seniority_guess")),
+        "stage_preferences_json": parse_csv(form_values["stage_preferences"]),
+        "core_titles_json": parse_csv(form_values["core_titles"]),
+        "excluded_keywords_json": parse_csv(form_values["excluded_keywords"]),
+        "min_seniority_band": form_values["min_seniority_band"],
+        "max_seniority_band": form_values["max_seniority_band"],
+        "stretch_role_families_json": parse_csv(form_values["stretch_role_families"]),
+        "minimum_fit_threshold": form_values["minimum_fit_threshold"],
+    }
+
+
 def discovery_query_family_frame(cycle_metrics: dict[str, Any]) -> pd.DataFrame:
     rows: list[dict[str, Any]] = []
     for query_family, metrics in sorted((cycle_metrics.get("query_family_metrics") or {}).items()):
@@ -497,7 +530,7 @@ def render_profile_tab(profile: dict[str, Any], learning: dict[str, Any]) -> Non
             st.error(f"Resume parsing failed: {exc}")
 
     latest_resume_ingest = st.session_state.get("latest_resume_ingest")
-    review_profile = latest_resume_ingest.get("candidate_profile") if latest_resume_ingest else profile
+    review_profile = get_profile_form_source(profile, latest_resume_ingest)
     review_rows = build_profile_review_rows(review_profile)
 
     if latest_resume_ingest:
@@ -519,52 +552,56 @@ def render_profile_tab(profile: dict[str, Any], learning: dict[str, Any]) -> Non
         st.dataframe(pd.DataFrame(review_rows), use_container_width=True, hide_index=True)
 
     with st.form("profile-form"):
-        name = st.text_input("Profile name", value=profile.get("name", "Demo Candidate"))
-        preferred_titles = st.text_input("Preferred titles", value=", ".join(profile.get("preferred_titles_json", [])))
-        core_titles = st.text_input("Core titles", value=", ".join(profile.get("core_titles_json", [])))
-        adjacent_titles = st.text_input("Adjacent titles", value=", ".join(profile.get("adjacent_titles_json", [])))
-        excluded_titles = st.text_input("Excluded titles", value=", ".join(profile.get("excluded_titles_json", [])))
-        preferred_domains = st.text_input("Preferred domains", value=", ".join(profile.get("preferred_domains_json", [])))
-        preferred_locations = st.text_input("Preferred locations", value=", ".join(profile.get("preferred_locations_json", [])))
-        excluded_companies = st.text_input("Excluded companies", value=", ".join(profile.get("excluded_companies_json", [])))
-        stage_preferences = st.text_input("Preferred stages", value=", ".join(profile.get("stage_preferences_json", [])))
-        stretch_role_families = st.text_input("Stretch role families", value=", ".join(profile.get("stretch_role_families_json", [])))
-        excluded_keywords = st.text_input("Excluded keywords", value=", ".join(profile.get("excluded_keywords_json", [])))
+        name = st.text_input("Profile name", value=review_profile.get("name", "Demo Candidate"))
+        preferred_titles = st.text_input("Preferred titles", value=", ".join(review_profile.get("preferred_titles_json", [])))
+        core_titles = st.text_input("Core titles", value=", ".join(review_profile.get("core_titles_json", [])))
+        adjacent_titles = st.text_input("Adjacent titles", value=", ".join(review_profile.get("adjacent_titles_json", [])))
+        excluded_titles = st.text_input("Excluded titles", value=", ".join(review_profile.get("excluded_titles_json", [])))
+        preferred_domains = st.text_input("Preferred domains", value=", ".join(review_profile.get("preferred_domains_json", [])))
+        preferred_locations = st.text_input("Preferred locations", value=", ".join(review_profile.get("preferred_locations_json", [])))
+        excluded_companies = st.text_input("Excluded companies", value=", ".join(review_profile.get("excluded_companies_json", [])))
+        stage_preferences = st.text_input("Preferred stages", value=", ".join(review_profile.get("stage_preferences_json", [])))
+        stretch_role_families = st.text_input("Stretch role families", value=", ".join(review_profile.get("stretch_role_families_json", [])))
+        excluded_keywords = st.text_input("Excluded keywords", value=", ".join(review_profile.get("excluded_keywords_json", [])))
         minimum_fit_threshold = st.number_input(
             "Minimum fit threshold",
             min_value=0.0,
             max_value=5.0,
             step=0.1,
-            value=float(profile.get("minimum_fit_threshold", 2.8)),
+            value=float(review_profile.get("minimum_fit_threshold", 2.8)),
         )
         bands = ["entry", "junior", "mid", "senior", "staff", "executive"]
-        min_seniority = st.selectbox("Min seniority", bands, index=bands.index(profile.get("min_seniority_band", "mid")))
-        max_seniority = st.selectbox("Max seniority", bands, index=bands.index(profile.get("max_seniority_band", "senior")))
+        min_seniority_value = review_profile.get("min_seniority_band", "mid")
+        max_seniority_value = review_profile.get("max_seniority_band", "senior")
+        min_seniority = st.selectbox("Min seniority", bands, index=bands.index(min_seniority_value if min_seniority_value in bands else "mid"))
+        max_seniority = st.selectbox("Max seniority", bands, index=bands.index(max_seniority_value if max_seniority_value in bands else "senior"))
         if st.form_submit_button("Save profile", use_container_width=True):
-            fetch_json(
-                "/candidate-profile",
-                method="POST",
-                payload={
-                    "profile_schema_version": profile.get("profile_schema_version", "v1"),
+            payload = build_profile_update_payload(
+                profile,
+                review_profile,
+                {
                     "name": name,
-                    "raw_resume_text": profile.get("raw_resume_text", ""),
-                    "extracted_summary_json": profile.get("extracted_summary_json", {}),
-                    "preferred_titles_json": parse_csv(preferred_titles),
-                    "adjacent_titles_json": parse_csv(adjacent_titles),
-                    "excluded_titles_json": parse_csv(excluded_titles),
-                    "preferred_domains_json": parse_csv(preferred_domains),
-                    "excluded_companies_json": parse_csv(excluded_companies),
-                    "preferred_locations_json": parse_csv(preferred_locations),
-                    "seniority_guess": profile.get("seniority_guess"),
-                    "stage_preferences_json": parse_csv(stage_preferences),
-                    "core_titles_json": parse_csv(core_titles),
-                    "excluded_keywords_json": parse_csv(excluded_keywords),
+                    "preferred_titles": preferred_titles,
+                    "adjacent_titles": adjacent_titles,
+                    "excluded_titles": excluded_titles,
+                    "preferred_domains": preferred_domains,
+                    "excluded_companies": excluded_companies,
+                    "preferred_locations": preferred_locations,
+                    "stage_preferences": stage_preferences,
+                    "core_titles": core_titles,
+                    "excluded_keywords": excluded_keywords,
                     "min_seniority_band": min_seniority,
                     "max_seniority_band": max_seniority,
-                    "stretch_role_families_json": parse_csv(stretch_role_families),
+                    "stretch_role_families": stretch_role_families,
                     "minimum_fit_threshold": minimum_fit_threshold,
                 },
             )
+            fetch_json(
+                "/candidate-profile",
+                method="POST",
+                payload=payload,
+            )
+            st.session_state.pop("latest_resume_ingest", None)
             st.rerun()
 
     st.caption(f"Profile schema: {profile.get('profile_schema_version', 'v1')}")

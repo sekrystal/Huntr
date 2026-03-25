@@ -190,3 +190,69 @@ def test_build_profile_review_rows_flattens_structured_profile_for_ui() -> None:
     assert by_field["Preferred titles"] == "chief of staff"
     assert by_field["Preferred domains"] == "ai"
     assert by_field["Seniority"] == "senior (mid to staff)"
+
+
+def test_get_profile_form_source_prefers_latest_resume_ingest_candidate_profile() -> None:
+    profile = {"name": "Saved Profile", "preferred_titles_json": ["operator"]}
+    latest_resume_ingest = {
+        "candidate_profile": {
+            "name": "resume",
+            "preferred_titles_json": ["chief of staff"],
+            "raw_resume_text": "resume text",
+        }
+    }
+
+    form_source = ui_app.get_profile_form_source(profile, latest_resume_ingest)
+
+    assert form_source["name"] == "resume"
+    assert form_source["preferred_titles_json"] == ["chief of staff"]
+
+
+def test_build_profile_update_payload_preserves_extracted_resume_draft_fields() -> None:
+    saved_profile = {
+        "profile_schema_version": "v1",
+        "name": "Saved Profile",
+        "raw_resume_text": "old raw text",
+        "extracted_summary_json": {"summary": "old summary"},
+        "seniority_guess": "mid",
+    }
+    review_profile = {
+        "profile_schema_version": "v1",
+        "name": "resume",
+        "raw_resume_text": "new parsed raw text",
+        "extracted_summary_json": {
+            "summary": "new summary",
+            "resume_filename": "resume.pdf",
+            "extraction_status": "partial",
+            "missing_fields": ["preferred domains"],
+        },
+        "seniority_guess": "senior",
+    }
+
+    payload = ui_app.build_profile_update_payload(
+        saved_profile,
+        review_profile,
+        {
+            "name": "Edited Candidate",
+            "preferred_titles": "chief of staff, operator",
+            "adjacent_titles": "program manager",
+            "excluded_titles": "intern",
+            "preferred_domains": "ai",
+            "excluded_companies": "BigCo",
+            "preferred_locations": "remote",
+            "stage_preferences": "series a",
+            "core_titles": "chief of staff",
+            "excluded_keywords": "clearance required",
+            "min_seniority_band": "mid",
+            "max_seniority_band": "staff",
+            "stretch_role_families": "operations",
+            "minimum_fit_threshold": 3.3,
+        },
+    )
+
+    assert payload["name"] == "Edited Candidate"
+    assert payload["raw_resume_text"] == "new parsed raw text"
+    assert payload["extracted_summary_json"]["resume_filename"] == "resume.pdf"
+    assert payload["extracted_summary_json"]["extraction_status"] == "partial"
+    assert payload["preferred_titles_json"] == ["chief of staff", "operator"]
+    assert payload["seniority_guess"] == "senior"

@@ -44,11 +44,18 @@ def preview_resume_text(filename: str, raw_text: str, warnings: list[str] | None
     if missing_fields:
         merged_warnings.append("Extraction was partial. Review the inferred profile fields before saving.")
 
+    extracted_summary = {
+        "summary": parsed["summary"],
+        "resume_filename": filename,
+        "extraction_status": "partial" if missing_fields else "complete",
+        "missing_fields": missing_fields,
+    }
+
     payload = CandidateProfilePayload(
         profile_schema_version="v1",
         name=filename.rsplit(".", 1)[0] or "Candidate",
         raw_resume_text=cleaned_text,
-        extracted_summary_json={"summary": parsed["summary"], "resume_filename": filename},
+        extracted_summary_json=extracted_summary,
         preferred_titles_json=parsed["preferred_titles_json"],
         adjacent_titles_json=parsed["adjacent_titles_json"],
         excluded_titles_json=parsed["excluded_titles_json"],
