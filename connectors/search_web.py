@@ -55,6 +55,12 @@ DDG_ZERO_YIELD_MARKERS = [
 ]
 BLOCKED_AGGREGATOR_HOSTS = ["linkedin.com", "indeed.com", "glassdoor.com", "ziprecruiter.com", "wellfound.com"]
 PROVIDER_OWNED_HOSTS = {"duckduckgo.com", "www.duckduckgo.com"}
+PROVIDER_SPECIFIC_QUERY_TERMS = (
+    "site:job-boards.greenhouse.io",
+    "site:jobs.ashbyhq.com",
+    "greenhouse",
+    "ashby",
+)
 
 
 def classify_query_family(query_text: str) -> str:
@@ -125,9 +131,28 @@ class SearchDiscoveryConnector:
         seen_urls: set[str] = set()
         zero_yield_queries: list[dict[str, object]] = []
         for query_text in queries[: self.settings.search_discovery_query_limit]:
+            query_results, query_attempts = self._fetch_query_results(query_text, seen_urls)
+            if not query_results:
+                zero_yield_queries.extend(query_attempts)
+            for item in query_results:
+                results.append(item)
+                seen_urls.add(item.url)
+        if not results:
+            reason = zero_yield_queries[0]["reason"] if zero_yield_queries else "search provider returned no accepted results"
+            self.last_error = f"Search discovery zero-yield: {reason}"
+        return results
+
+    def _fetch_query_results(
+        self,
+        query_text: str,
+        seen_urls: set[str],
+    ) -> tuple[list[SearchDiscoveryResult], list[dict[str, object]]]:
+        zero_yield_attempts: list[dict[str, object]] = []
+        current_query = query_text
+        for attempt_index in range(2):
             response = requests.get(
                 "https://duckduckgo.com/html/",
-                params={"q": query_text},
+                params={"q": current_query},
                 timeout=(5, 20),
                 headers={"User-Agent": BROWSER_USER_AGENT},
                 allow_redirects=True,
@@ -140,15 +165,16 @@ class SearchDiscoveryConnector:
             logger.info(
                 "[SEARCH_PROVIDER_RESPONSE] %s",
                 {
-                    "query": query_text,
+                    "query": current_query,
                     "status_code": response.status_code,
                     "final_url": response.url,
                     "response_bytes": len(response.content or b""),
                     "block_markers": block_markers,
+                    "attempt": attempt_index + 1,
                 },
             )
             query_results, diagnostics = _parse_search_results_from_html(
-                query_text,
+                current_query,
                 html,
                 seen_urls,
                 result_limit=self.settings.search_discovery_result_limit,
@@ -156,58 +182,76 @@ class SearchDiscoveryConnector:
             logger.info(
                 "[SEARCH_PROVIDER_PARSE] %s",
                 {
-                    "query": query_text,
+                    "query": current_query,
                     "strict_match_count": len(strict_matches),
                     "fallback_anchor_candidate_count": len(fallback_candidates),
                     "accepted_result_count": len(query_results),
+                    "attempt": attempt_index + 1,
+                    "reason": diagnostics["reason"],
                 },
             )
             if diagnostics.get("candidate_urls"):
                 logger.info(
                     "[SEARCH_PROVIDER_CANDIDATE_URLS] %s",
                     {
-                        "query": query_text,
+                        "query": current_query,
                         "candidate_urls": diagnostics["candidate_urls"][:10],
+                        "attempt": attempt_index + 1,
                     },
                 )
             if diagnostics.get("accepted_urls"):
                 logger.info(
                     "[SEARCH_PROVIDER_ACCEPTED_URLS] %s",
                     {
-                        "query": query_text,
+                        "query": current_query,
                         "accepted_urls": diagnostics["accepted_urls"][:10],
                         "accepted_reasons": diagnostics["accepted_reasons"][:10],
+                        "attempt": attempt_index + 1,
                     },
                 )
             if diagnostics.get("rejected_urls"):
                 logger.info(
                     "[SEARCH_PROVIDER_REJECTED_URLS] %s",
                     {
-                        "query": query_text,
+                        "query": current_query,
                         "rejected_urls": diagnostics["rejected_urls"][:10],
                         "rejected_reasons": diagnostics["rejected_reasons"][:10],
+                        "attempt": attempt_index + 1,
                     },
                 )
-            if not query_results:
-                zero_yield = {
-                    "query": query_text,
-                    "status_code": response.status_code,
-                    "final_url": response.url,
-                    "response_bytes": len(response.content or b""),
-                    "strict_match_count": len(strict_matches),
-                    "fallback_anchor_candidate_count": len(fallback_candidates),
-                    "block_markers": block_markers,
+            if query_results:
+                return query_results, zero_yield_attempts
+
+            zero_yield = {
+                "query": current_query,
+                "status_code": response.status_code,
+                "final_url": response.url,
+                "response_bytes": len(response.content or b""),
+                "strict_match_count": len(strict_matches),
+                "fallback_anchor_candidate_count": len(fallback_candidates),
+                "block_markers": block_markers,
+                "reason": diagnostics["reason"],
+                "attempt": attempt_index + 1,
+            }
+            zero_yield_attempts.append(zero_yield)
+            logger.warning("[SEARCH_PROVIDER_ZERO_RESULTS] %s", zero_yield)
+
+            if diagnostics["reason"] != "provider self-links only" or attempt_index > 0:
+                break
+            rewritten_query = _rewrite_query_for_provider_failover(query_text)
+            if not rewritten_query:
+                break
+            logger.warning(
+                "[SEARCH_PROVIDER_FAILOVER] %s",
+                {
+                    "original_query": query_text,
+                    "rewritten_query": rewritten_query,
                     "reason": diagnostics["reason"],
-                }
-                zero_yield_queries.append(zero_yield)
-                logger.warning("[SEARCH_PROVIDER_ZERO_RESULTS] %s", zero_yield)
-            for item in query_results:
-                results.append(item)
-                seen_urls.add(item.url)
-        if not results:
-            reason = zero_yield_queries[0]["reason"] if zero_yield_queries else "search provider returned no accepted results"
-            self.last_error = f"Search discovery zero-yield: {reason}"
-        return results
+                },
+            )
+            current_query = rewritten_query
+
+        return [], zero_yield_attempts
 
 
 def _clean_html(value: str) -> str:
@@ -292,6 +336,7 @@ def _parse_search_results_from_html(
     result_limit: int,
 ) -> tuple[list[SearchDiscoveryResult], dict[str, str]]:
     accepted: list[SearchDiscoveryResult] = []
+    processed_urls: set[str] = set()
     candidate_urls: list[str] = []
     accepted_urls: list[str] = []
     accepted_reasons: list[str] = []
@@ -301,6 +346,9 @@ def _parse_search_results_from_html(
         href = _extract_result_url(match.group("href"))
         title = _clean_html(match.group("title"))
         if href:
+            if href in processed_urls:
+                continue
+            processed_urls.add(href)
             candidate_urls.append(href)
         reason = _surface_acceptance_reason(href) if href else "missing_host"
         if not href or href in seen_urls or not reason.startswith("accepted_"):
@@ -329,6 +377,9 @@ def _parse_search_results_from_html(
             }
 
     for href in _extract_fallback_anchor_candidates(html):
+        if href in processed_urls:
+            continue
+        processed_urls.add(href)
         candidate_urls.append(href)
         reason = _surface_acceptance_reason(href)
         if href in seen_urls or not reason.startswith("accepted_"):
@@ -366,6 +417,15 @@ def _parse_search_results_from_html(
         }
 
     if RESULT_LINK_RE.search(html):
+        if rejected_reasons and all(reason == "provider_self_link" for reason in rejected_reasons):
+            return accepted, {
+                "reason": "provider self-links only",
+                "candidate_urls": candidate_urls,
+                "accepted_urls": accepted_urls,
+                "accepted_reasons": accepted_reasons,
+                "rejected_urls": rejected_urls,
+                "rejected_reasons": rejected_reasons,
+            }
         return accepted, {
             "reason": "strict matches found but none were accepted",
             "candidate_urls": candidate_urls,
@@ -375,6 +435,15 @@ def _parse_search_results_from_html(
             "rejected_reasons": rejected_reasons,
         }
     if _extract_fallback_anchor_candidates(html):
+        if rejected_reasons and all(reason == "provider_self_link" for reason in rejected_reasons):
+            return accepted, {
+                "reason": "provider self-links only",
+                "candidate_urls": candidate_urls,
+                "accepted_urls": accepted_urls,
+                "accepted_reasons": accepted_reasons,
+                "rejected_urls": rejected_urls,
+                "rejected_reasons": rejected_reasons,
+            }
         return accepted, {
             "reason": "fallback anchors found but none were accepted",
             "candidate_urls": candidate_urls,
@@ -391,6 +460,20 @@ def _parse_search_results_from_html(
         "rejected_urls": rejected_urls,
         "rejected_reasons": rejected_reasons,
     }
+
+
+def _rewrite_query_for_provider_failover(query_text: str) -> str | None:
+    rewritten = query_text or ""
+    for term in PROVIDER_SPECIFIC_QUERY_TERMS:
+        rewritten = re.sub(rf"(?i)\b{re.escape(term)}\b", " ", rewritten)
+    rewritten = " ".join(rewritten.split())
+    if not rewritten:
+        return None
+    if "careers" not in rewritten.lower() and "jobs" not in rewritten.lower():
+        rewritten = f"{rewritten} careers"
+    if rewritten.strip().lower() == (query_text or "").strip().lower():
+        return None
+    return rewritten
 
 
 def fetch_page_snapshot(url: str, timeout: tuple[int, int] = (5, 15)) -> tuple[str, str]:

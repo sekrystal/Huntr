@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from connectors.search_web import (
+    SearchDiscoveryConnector,
     SearchDiscoveryResult,
     _extract_result_url,
     _is_supported_job_surface,
     _parse_search_results_from_html,
+    _rewrite_query_for_provider_failover,
     _surface_acceptance_reason,
     build_search_queries,
     classify_query_family,
@@ -95,6 +99,86 @@ def test_supported_job_surface_accepts_careers_variants_and_blocks_aggregators()
 def test_surface_acceptance_reason_rejects_duckduckgo_self_links() -> None:
     assert _surface_acceptance_reason("https://duckduckgo.com/") == "provider_self_link"
     assert _surface_acceptance_reason("https://duckduckgo.com/help") == "provider_self_link"
+
+
+def test_parse_search_results_classifies_provider_self_links_only_as_provider_failure() -> None:
+    html = """
+    <html>
+      <body>
+        <a class="result__a" href="https://duckduckgo.com/help">Help</a>
+        <a class="result__a" href="https://duckduckgo.com/?q=acme">Search</a>
+      </body>
+    </html>
+    """
+
+    results, diagnostics = _parse_search_results_from_html('site:job-boards.greenhouse.io "chief of staff"', html, set(), result_limit=5)
+
+    assert results == []
+    assert diagnostics["reason"] == "provider self-links only"
+    assert diagnostics["rejected_reasons"] == ["provider_self_link", "provider_self_link"]
+
+
+def test_rewrite_query_for_provider_failover_converts_provider_specific_probe_to_careers_query() -> None:
+    assert _rewrite_query_for_provider_failover('site:job-boards.greenhouse.io "chief of staff"') == '"chief of staff" careers'
+    assert _rewrite_query_for_provider_failover('"Acme" "chief of staff" greenhouse') == '"Acme" "chief of staff" careers'
+
+
+def test_fetch_retries_once_with_rewritten_query_after_provider_self_link_only_results(monkeypatch) -> None:
+    class FakeResponse:
+        def __init__(self, query: str, html: str) -> None:
+            self.status_code = 200
+            self.url = f"https://duckduckgo.com/html/?q={query}"
+            self.text = html
+            self.content = html.encode("utf-8")
+
+        def raise_for_status(self) -> None:
+            return None
+
+    seen_queries: list[str] = []
+
+    def fake_get(url: str, *, params: dict[str, str], **_kwargs) -> FakeResponse:
+        query = params["q"]
+        seen_queries.append(query)
+        if len(seen_queries) == 1:
+            return FakeResponse(
+                query,
+                """
+                <html>
+                  <body>
+                    <a class="result__a" href="https://duckduckgo.com/help">Help</a>
+                  </body>
+                </html>
+                """,
+            )
+        return FakeResponse(
+            query,
+            """
+            <html>
+              <body>
+                <a class="result__a" href="https://careers.acme.ai/open-roles">Open roles</a>
+              </body>
+            </html>
+            """,
+        )
+
+    monkeypatch.setattr(
+        "connectors.search_web.get_settings",
+        lambda: SimpleNamespace(
+            search_discovery_enabled=True,
+            search_discovery_query_limit=8,
+            search_discovery_result_limit=5,
+            demo_mode=True,
+        ),
+    )
+    monkeypatch.setattr("connectors.search_web.requests.get", fake_get)
+
+    connector = SearchDiscoveryConnector()
+
+    results, live = connector.fetch(['site:job-boards.greenhouse.io "chief of staff"'])
+
+    assert live is True
+    assert seen_queries == ['site:job-boards.greenhouse.io "chief of staff"', '"chief of staff" careers']
+    assert [item.url for item in results] == ["https://careers.acme.ai/open-roles"]
 
 
 def test_build_search_queries_prefers_careers_mix_over_ats_direct_only() -> None:
