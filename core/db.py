@@ -18,7 +18,34 @@ engine = create_engine(
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
 
 
+SQLITE_COMPATIBILITY_COLUMNS: dict[str, dict[str, str]] = {
+    "applications": {
+        "status_reason_code": "TEXT",
+        "outcome_code": "VARCHAR(50)",
+        "outcome_reason_code": "TEXT",
+    }
+}
+
+
+def _apply_sqlite_compatibility_migrations() -> None:
+    if not str(engine.url).startswith("sqlite"):
+        return
+
+    inspector = inspect(engine)
+    existing_tables = set(inspector.get_table_names())
+    with engine.begin() as connection:
+        for table_name, column_defs in SQLITE_COMPATIBILITY_COLUMNS.items():
+            if table_name not in existing_tables:
+                continue
+            existing_columns = {column["name"] for column in inspector.get_columns(table_name)}
+            for column_name, column_type in column_defs.items():
+                if column_name in existing_columns:
+                    continue
+                connection.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}"))
+
+
 def init_db() -> None:
+    _apply_sqlite_compatibility_migrations()
     inspector = inspect(engine)
     expected_columns = {
         "signals": {"signal_status"},
@@ -27,7 +54,13 @@ def init_db() -> None:
         "candidate_profiles": {"core_titles_json", "minimum_fit_threshold"},
         "source_queries": {"performance_stats_json"},
         "source_query_stats": {"query_text", "leads_generated", "last_run_at", "decision_reason"},
-        "applications": {"current_status", "date_applied"},
+        "applications": {
+            "current_status",
+            "date_applied",
+            "status_reason_code",
+            "outcome_code",
+            "outcome_reason_code",
+        },
         "agent_activities": {"agent_name", "action", "result_summary"},
         "investigations": {"signal_id", "status", "next_check_at"},
         "watchlist_items": {"item_type", "value", "status", "decision_reason"},
