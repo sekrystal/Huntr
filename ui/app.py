@@ -84,6 +84,83 @@ def get_profile_form_source(profile: dict[str, Any], latest_resume_ingest: Optio
     return profile
 
 
+def dedupe_preserving_order(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for value in values:
+        cleaned = value.strip()
+        if not cleaned:
+            continue
+        key = cleaned.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        ordered.append(cleaned)
+    return ordered
+
+
+def build_target_role_options(profile_source: dict[str, Any]) -> list[str]:
+    return dedupe_preserving_order(
+        [
+            *(profile_source.get("core_titles_json") or []),
+            *(profile_source.get("preferred_titles_json") or []),
+            *(profile_source.get("adjacent_titles_json") or []),
+            "chief of staff",
+            "founding operations lead",
+        ]
+    )
+
+
+def apply_target_role_selection(payload: dict[str, Any], target_role: str) -> dict[str, Any]:
+    selected_role = target_role.strip()
+    if not selected_role:
+        return payload
+
+    updated = dict(payload)
+    preferred_titles = dedupe_preserving_order([selected_role, *(updated.get("preferred_titles_json") or []), *(updated.get("core_titles_json") or [])])
+    core_titles = dedupe_preserving_order([selected_role, *(updated.get("core_titles_json") or []), *(updated.get("preferred_titles_json") or [])])
+    extracted_summary = dict(updated.get("extracted_summary_json") or {})
+
+    updated["preferred_titles_json"] = preferred_titles
+    updated["core_titles_json"] = core_titles[:3]
+    extracted_summary["selected_target_role"] = selected_role
+    updated["extracted_summary_json"] = extracted_summary
+    return updated
+
+
+def build_onboarding_state(
+    profile: dict[str, Any],
+    latest_resume_ingest: Optional[dict[str, Any]],
+    draft_profile: Optional[dict[str, Any]],
+) -> dict[str, Any]:
+    resume_complete = bool((latest_resume_ingest and latest_resume_ingest.get("candidate_profile")) or profile.get("raw_resume_text"))
+    review_complete = draft_profile is not None or (resume_complete and latest_resume_ingest is None)
+    target_role_complete = bool(
+        latest_resume_ingest is None
+        and draft_profile is None
+        and dedupe_preserving_order(
+            [
+                *((profile.get("core_titles_json") or [])),
+                *((profile.get("preferred_titles_json") or [])),
+            ]
+        )
+    )
+    if not resume_complete:
+        current_step = "resume"
+    elif latest_resume_ingest is not None and draft_profile is None:
+        current_step = "review"
+    elif draft_profile is not None:
+        current_step = "target_role"
+    else:
+        current_step = "discovery"
+    return {
+        "resume_complete": resume_complete,
+        "review_complete": review_complete,
+        "target_role_complete": target_role_complete,
+        "current_step": current_step,
+    }
+
+
 def build_profile_update_payload(
     profile: dict[str, Any],
     form_source: dict[str, Any],
@@ -112,6 +189,34 @@ def build_profile_update_payload(
         "stretch_role_families_json": parse_csv(form_values["stretch_role_families"]),
         "minimum_fit_threshold": form_values["minimum_fit_threshold"],
     }
+
+
+def render_onboarding_progress(state: dict[str, Any]) -> None:
+    labels = {
+        "resume": "Upload resume",
+        "review": "Review profile",
+        "target_role": "Pick target role",
+        "discovery": "Enter discovery",
+    }
+    order = ["resume", "review", "target_role", "discovery"]
+    current_step = state["current_step"]
+    status_by_step = {
+        "resume": state["resume_complete"],
+        "review": state["review_complete"],
+        "target_role": state["target_role_complete"],
+        "discovery": current_step == "discovery",
+    }
+    current_index = order.index(current_step)
+    steps = []
+    for index, step in enumerate(order):
+        if status_by_step[step]:
+            marker = "Complete"
+        elif index == current_index:
+            marker = "Current"
+        else:
+            marker = "Next"
+        steps.append(f"{index + 1}. {labels[step]} [{marker}]")
+    st.caption(" -> ".join(steps))
 
 
 def discovery_query_family_frame(cycle_metrics: dict[str, Any]) -> pd.DataFrame:
@@ -505,7 +610,14 @@ def render_detail(lead: dict[str, Any], key: str) -> None:
 
 
 def render_profile_tab(profile: dict[str, Any], learning: dict[str, Any]) -> None:
-    st.subheader("Resume and profile")
+    st.subheader("Onboarding")
+    st.caption("Move from resume upload to profile review, pick a target role, then continue into discovery.")
+    latest_resume_ingest = st.session_state.get("latest_resume_ingest")
+    draft_profile = st.session_state.get("onboarding_profile_draft")
+    onboarding_state = build_onboarding_state(profile, latest_resume_ingest, draft_profile)
+    render_onboarding_progress(onboarding_state)
+
+    st.markdown("#### Step 1: Upload resume")
     upload = st.file_uploader("Upload resume PDF, TXT, or MD", type=["pdf", "txt", "md"])
     pasted_resume = st.text_area("Paste resume text", height=120)
     if st.button("Parse resume", use_container_width=True):
@@ -528,12 +640,12 @@ def render_profile_tab(profile: dict[str, Any], learning: dict[str, Any]) -> Non
                 "text_preview": preview["text_preview"],
                 "candidate_profile": response.get("candidate_profile", preview["candidate_profile"]),
             }
+            st.session_state.pop("onboarding_profile_draft", None)
             st.rerun()
         except Exception as exc:
             st.error(f"Resume parsing failed: {exc}")
 
-    latest_resume_ingest = st.session_state.get("latest_resume_ingest")
-    review_profile = get_profile_form_source(profile, latest_resume_ingest)
+    review_profile = draft_profile or get_profile_form_source(profile, latest_resume_ingest)
     review_rows = build_profile_review_rows(review_profile)
 
     if latest_resume_ingest:
@@ -554,64 +666,89 @@ def render_profile_tab(profile: dict[str, Any], learning: dict[str, Any]) -> Non
         st.markdown("#### Extracted profile fields")
         st.dataframe(pd.DataFrame(review_rows), use_container_width=True, hide_index=True)
 
-    with st.form("profile-form"):
-        name = st.text_input("Profile name", value=review_profile.get("name", "Demo Candidate"))
-        preferred_titles = st.text_input("Preferred titles", value=", ".join(review_profile.get("preferred_titles_json", [])))
-        core_titles = st.text_input("Core titles", value=", ".join(review_profile.get("core_titles_json", [])))
-        adjacent_titles = st.text_input("Adjacent titles", value=", ".join(review_profile.get("adjacent_titles_json", [])))
-        excluded_titles = st.text_input("Excluded titles", value=", ".join(review_profile.get("excluded_titles_json", [])))
-        preferred_domains = st.text_input("Preferred domains", value=", ".join(review_profile.get("preferred_domains_json", [])))
-        preferred_locations = st.text_input("Preferred locations", value=", ".join(review_profile.get("preferred_locations_json", [])))
-        excluded_companies = st.text_input("Excluded companies", value=", ".join(review_profile.get("excluded_companies_json", [])))
-        confirmed_skills = st.text_input("Confirmed skills", value=", ".join(review_profile.get("confirmed_skills_json", [])))
-        competencies = st.text_input("Competencies", value=", ".join(review_profile.get("competencies_json", [])))
-        explicit_preferences = st.text_input("Explicit preferences", value=", ".join(review_profile.get("explicit_preferences_json", [])))
-        stage_preferences = st.text_input("Preferred stages", value=", ".join(review_profile.get("stage_preferences_json", [])))
-        stretch_role_families = st.text_input("Stretch role families", value=", ".join(review_profile.get("stretch_role_families_json", [])))
-        excluded_keywords = st.text_input("Excluded keywords", value=", ".join(review_profile.get("excluded_keywords_json", [])))
-        minimum_fit_threshold = st.number_input(
-            "Minimum fit threshold",
-            min_value=0.0,
-            max_value=5.0,
-            step=0.1,
-            value=float(review_profile.get("minimum_fit_threshold", 2.8)),
+    if onboarding_state["resume_complete"]:
+        st.markdown("#### Step 2: Review profile")
+        with st.form("profile-form"):
+            name = st.text_input("Profile name", value=review_profile.get("name", "Demo Candidate"))
+            preferred_titles = st.text_input("Preferred titles", value=", ".join(review_profile.get("preferred_titles_json", [])))
+            core_titles = st.text_input("Core titles", value=", ".join(review_profile.get("core_titles_json", [])))
+            adjacent_titles = st.text_input("Adjacent titles", value=", ".join(review_profile.get("adjacent_titles_json", [])))
+            excluded_titles = st.text_input("Excluded titles", value=", ".join(review_profile.get("excluded_titles_json", [])))
+            preferred_domains = st.text_input("Preferred domains", value=", ".join(review_profile.get("preferred_domains_json", [])))
+            preferred_locations = st.text_input("Preferred locations", value=", ".join(review_profile.get("preferred_locations_json", [])))
+            excluded_companies = st.text_input("Excluded companies", value=", ".join(review_profile.get("excluded_companies_json", [])))
+            confirmed_skills = st.text_input("Confirmed skills", value=", ".join(review_profile.get("confirmed_skills_json", [])))
+            competencies = st.text_input("Competencies", value=", ".join(review_profile.get("competencies_json", [])))
+            explicit_preferences = st.text_input("Explicit preferences", value=", ".join(review_profile.get("explicit_preferences_json", [])))
+            stage_preferences = st.text_input("Preferred stages", value=", ".join(review_profile.get("stage_preferences_json", [])))
+            stretch_role_families = st.text_input("Stretch role families", value=", ".join(review_profile.get("stretch_role_families_json", [])))
+            excluded_keywords = st.text_input("Excluded keywords", value=", ".join(review_profile.get("excluded_keywords_json", [])))
+            minimum_fit_threshold = st.number_input(
+                "Minimum fit threshold",
+                min_value=0.0,
+                max_value=5.0,
+                step=0.1,
+                value=float(review_profile.get("minimum_fit_threshold", 2.8)),
+            )
+            bands = ["entry", "junior", "mid", "senior", "staff", "executive"]
+            min_seniority_value = review_profile.get("min_seniority_band", "mid")
+            max_seniority_value = review_profile.get("max_seniority_band", "senior")
+            min_seniority = st.selectbox("Min seniority", bands, index=bands.index(min_seniority_value if min_seniority_value in bands else "mid"))
+            max_seniority = st.selectbox("Max seniority", bands, index=bands.index(max_seniority_value if max_seniority_value in bands else "senior"))
+            if st.form_submit_button("Continue to target role", use_container_width=True):
+                st.session_state["onboarding_profile_draft"] = build_profile_update_payload(
+                    profile,
+                    review_profile,
+                    {
+                        "name": name,
+                        "preferred_titles": preferred_titles,
+                        "adjacent_titles": adjacent_titles,
+                        "excluded_titles": excluded_titles,
+                        "preferred_domains": preferred_domains,
+                        "excluded_companies": excluded_companies,
+                        "preferred_locations": preferred_locations,
+                        "confirmed_skills": confirmed_skills,
+                        "competencies": competencies,
+                        "explicit_preferences": explicit_preferences,
+                        "stage_preferences": stage_preferences,
+                        "core_titles": core_titles,
+                        "excluded_keywords": excluded_keywords,
+                        "min_seniority_band": min_seniority,
+                        "max_seniority_band": max_seniority,
+                        "stretch_role_families": stretch_role_families,
+                        "minimum_fit_threshold": minimum_fit_threshold,
+                    },
+                )
+                st.rerun()
+
+    if draft_profile:
+        st.markdown("#### Step 3: Pick target role")
+        target_role_options = build_target_role_options(draft_profile)
+        default_target_role = (draft_profile.get("core_titles_json") or draft_profile.get("preferred_titles_json") or [""])[0]
+        default_index = target_role_options.index(default_target_role) if default_target_role in target_role_options else 0
+        with st.form("target-role-form"):
+            target_role = st.selectbox("Target role", target_role_options, index=default_index)
+            custom_target_role = st.text_input("Or enter a custom target role", value="")
+            st.caption(
+                "This selection becomes the first preferred and core title used for profile-aware search and fit scoring."
+            )
+            if st.form_submit_button("Save profile and enter discovery", use_container_width=True):
+                selected_target_role = custom_target_role.strip() or target_role
+                payload = apply_target_role_selection(draft_profile, selected_target_role)
+                fetch_json("/candidate-profile", method="POST", payload=payload)
+                st.session_state["last_onboarding_target_role"] = selected_target_role
+                st.session_state.pop("latest_resume_ingest", None)
+                st.session_state.pop("onboarding_profile_draft", None)
+                st.rerun()
+
+    if onboarding_state["current_step"] == "discovery":
+        st.markdown("#### Step 4: Enter discovery")
+        selected_target_role = (profile.get("extracted_summary_json") or {}).get("selected_target_role") or st.session_state.get("last_onboarding_target_role")
+        if selected_target_role:
+            st.success(f"Target role saved: {selected_target_role}")
+        st.caption(
+            "Continue in the Leads tab for ranked matches or the Discovery tab to inspect recall expansion from this saved profile."
         )
-        bands = ["entry", "junior", "mid", "senior", "staff", "executive"]
-        min_seniority_value = review_profile.get("min_seniority_band", "mid")
-        max_seniority_value = review_profile.get("max_seniority_band", "senior")
-        min_seniority = st.selectbox("Min seniority", bands, index=bands.index(min_seniority_value if min_seniority_value in bands else "mid"))
-        max_seniority = st.selectbox("Max seniority", bands, index=bands.index(max_seniority_value if max_seniority_value in bands else "senior"))
-        if st.form_submit_button("Save profile", use_container_width=True):
-            payload = build_profile_update_payload(
-                profile,
-                review_profile,
-                {
-                    "name": name,
-                    "preferred_titles": preferred_titles,
-                    "adjacent_titles": adjacent_titles,
-                    "excluded_titles": excluded_titles,
-                    "preferred_domains": preferred_domains,
-                    "excluded_companies": excluded_companies,
-                    "preferred_locations": preferred_locations,
-                    "confirmed_skills": confirmed_skills,
-                    "competencies": competencies,
-                    "explicit_preferences": explicit_preferences,
-                    "stage_preferences": stage_preferences,
-                    "core_titles": core_titles,
-                    "excluded_keywords": excluded_keywords,
-                    "min_seniority_band": min_seniority,
-                    "max_seniority_band": max_seniority,
-                    "stretch_role_families": stretch_role_families,
-                    "minimum_fit_threshold": minimum_fit_threshold,
-                },
-            )
-            fetch_json(
-                "/candidate-profile",
-                method="POST",
-                payload=payload,
-            )
-            st.session_state.pop("latest_resume_ingest", None)
-            st.rerun()
 
     st.caption(f"Profile schema: {profile.get('profile_schema_version', 'v1')}")
     st.caption(profile.get("extracted_summary_json", {}).get("summary", "No profile summary yet."))

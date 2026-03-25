@@ -208,6 +208,59 @@ def test_get_profile_form_source_prefers_latest_resume_ingest_candidate_profile(
     assert form_source["preferred_titles_json"] == ["chief of staff"]
 
 
+def test_build_onboarding_state_requires_resume_before_review() -> None:
+    state = ui_app.build_onboarding_state(
+        profile={"raw_resume_text": "", "preferred_titles_json": []},
+        latest_resume_ingest=None,
+        draft_profile=None,
+    )
+
+    assert state["resume_complete"] is False
+    assert state["review_complete"] is False
+    assert state["target_role_complete"] is False
+    assert state["current_step"] == "resume"
+
+
+def test_build_onboarding_state_moves_from_review_to_target_role() -> None:
+    latest_resume_ingest = {
+        "candidate_profile": {
+            "raw_resume_text": "parsed resume text",
+            "preferred_titles_json": ["chief of staff"],
+            "core_titles_json": ["chief of staff"],
+        }
+    }
+
+    review_state = ui_app.build_onboarding_state(
+        profile={"raw_resume_text": "", "preferred_titles_json": []},
+        latest_resume_ingest=latest_resume_ingest,
+        draft_profile=None,
+    )
+    target_role_state = ui_app.build_onboarding_state(
+        profile={"raw_resume_text": "", "preferred_titles_json": []},
+        latest_resume_ingest=latest_resume_ingest,
+        draft_profile={"raw_resume_text": "parsed resume text", "preferred_titles_json": ["chief of staff"]},
+    )
+
+    assert review_state["current_step"] == "review"
+    assert target_role_state["current_step"] == "target_role"
+    assert target_role_state["review_complete"] is True
+
+
+def test_apply_target_role_selection_prioritizes_selected_role_in_structured_inputs() -> None:
+    payload = ui_app.apply_target_role_selection(
+        {
+            "preferred_titles_json": ["operator", "chief of staff"],
+            "core_titles_json": ["operator"],
+            "extracted_summary_json": {"summary": "Operator profile"},
+        },
+        "founding operations lead",
+    )
+
+    assert payload["preferred_titles_json"][0] == "founding operations lead"
+    assert payload["core_titles_json"][0] == "founding operations lead"
+    assert payload["extracted_summary_json"]["selected_target_role"] == "founding operations lead"
+
+
 def test_build_profile_update_payload_preserves_extracted_resume_draft_fields() -> None:
     saved_profile = {
         "profile_schema_version": "v1",
