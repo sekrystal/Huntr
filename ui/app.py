@@ -14,7 +14,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from services.profile import extract_text_from_resume_upload
+from services.document_ingest import preview_resume_text, preview_resume_upload
+from services.profile_ingest import build_profile_review_rows
 
 
 API_BASE_URL = os.getenv("OPPORTUNITY_SCOUT_API_URL", "http://127.0.0.1:8000")
@@ -474,18 +475,48 @@ def render_profile_tab(profile: dict[str, Any], learning: dict[str, Any]) -> Non
     if st.button("Parse resume", use_container_width=True):
         try:
             if upload is not None:
-                raw_text, warnings = extract_text_from_resume_upload(upload.name, upload.getvalue())
-                response = fetch_json("/resume", method="POST", payload={"filename": upload.name, "raw_text": raw_text})
-                for warning in warnings + response.get("warnings", []):
-                    st.info(warning)
+                preview = preview_resume_upload(upload.name, upload.getvalue())
+                response = fetch_json("/resume", method="POST", payload={"filename": upload.name, "raw_text": preview["raw_text"]})
             elif pasted_resume.strip():
-                fetch_json("/resume", method="POST", payload={"filename": "pasted_resume.txt", "raw_text": pasted_resume.strip()})
+                preview = preview_resume_text("pasted_resume.txt", pasted_resume.strip())
+                response = fetch_json("/resume", method="POST", payload={"filename": "pasted_resume.txt", "raw_text": preview["raw_text"]})
             else:
                 st.warning("Upload a resume or paste text first.")
                 return
+            st.session_state["latest_resume_ingest"] = {
+                "filename": preview["filename"],
+                "status": preview["status"],
+                "warnings": [*preview["warnings"], *response.get("warnings", [])],
+                "missing_fields": preview["missing_fields"],
+                "matched_terms": preview["matched_terms"],
+                "text_preview": preview["text_preview"],
+                "candidate_profile": response.get("candidate_profile", preview["candidate_profile"]),
+            }
             st.rerun()
         except Exception as exc:
             st.error(f"Resume parsing failed: {exc}")
+
+    latest_resume_ingest = st.session_state.get("latest_resume_ingest")
+    review_profile = latest_resume_ingest.get("candidate_profile") if latest_resume_ingest else profile
+    review_rows = build_profile_review_rows(review_profile)
+
+    if latest_resume_ingest:
+        st.markdown("#### Latest extraction")
+        st.caption(f"Source: {latest_resume_ingest['filename']} | Status: {latest_resume_ingest['status']}")
+        for warning in latest_resume_ingest["warnings"]:
+            st.info(warning)
+        if latest_resume_ingest["missing_fields"]:
+            st.caption("Needs review: " + ", ".join(latest_resume_ingest["missing_fields"]))
+        matched_terms = latest_resume_ingest.get("matched_terms") or {}
+        for field_name, terms in matched_terms.items():
+            if terms:
+                st.caption(f"{field_name.replace('_', ' ').title()}: {', '.join(terms)}")
+        if latest_resume_ingest.get("text_preview"):
+            st.code(latest_resume_ingest["text_preview"], language="text")
+
+    if review_rows:
+        st.markdown("#### Extracted profile fields")
+        st.dataframe(pd.DataFrame(review_rows), use_container_width=True, hide_index=True)
 
     with st.form("profile-form"):
         name = st.text_input("Profile name", value=profile.get("name", "Demo Candidate"))

@@ -5,6 +5,7 @@ from sqlalchemy.orm import sessionmaker
 
 from core.models import Base
 from core.schemas import CandidateProfilePayload, StructuredCandidateProfile
+from services.document_ingest import preview_resume_text, preview_resume_upload
 from services.profile import extract_text_from_resume_upload, get_candidate_profile, ingest_resume, profile_to_payload, update_candidate_profile
 
 
@@ -124,3 +125,25 @@ def test_pdf_resume_upload_extraction() -> None:
     text, warnings = extract_text_from_resume_upload("resume.pdf", pdf)
     assert "Hello PDF Resume" in text
     assert warnings
+
+
+def test_resume_preview_builds_structured_profile_from_upload() -> None:
+    preview = preview_resume_upload(
+        "resume.txt",
+        b"Chief of Staff focused on AI and developer tools in San Francisco at Series A startups.",
+    )
+
+    assert preview["status"] == "complete"
+    assert preview["missing_fields"] == []
+    assert preview["candidate_profile"]["structured_profile_json"]["targeting"]["preferred_titles"]
+    assert "chief of staff" in preview["candidate_profile"]["preferred_titles_json"]
+
+
+def test_resume_preview_marks_partial_extraction_without_failing() -> None:
+    preview = preview_resume_text("resume.txt", "Experienced operator with strong execution.")
+
+    assert preview["status"] == "partial"
+    assert "preferred titles" in preview["missing_fields"]
+    assert "preferred domains" in preview["missing_fields"]
+    assert preview["candidate_profile"]["structured_profile_json"]["targeting"]["preferred_titles"]
+    assert preview["warnings"]

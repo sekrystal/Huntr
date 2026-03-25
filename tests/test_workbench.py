@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 import pandas as pd
 import requests
 
+from services.profile_ingest import build_profile_review_rows
 from ui import app as ui_app
 from ui.app import filter_and_sort_table
 
@@ -159,3 +160,33 @@ def test_runtime_surface_payload_prefers_health_truth_and_merges_summaries() -> 
     assert payload["latest_success_summary"] == "Health success summary"
     assert payload["latest_failure_summary"] == "Health failure summary"
     assert payload["operator_hints"] == ["health hint"]
+
+
+def test_build_profile_review_rows_flattens_structured_profile_for_ui() -> None:
+    rows = build_profile_review_rows(
+        {
+            "preferred_titles_json": ["chief of staff"],
+            "preferred_domains_json": ["ai"],
+            "preferred_locations_json": ["remote"],
+            "stage_preferences_json": ["series a"],
+            "seniority_guess": "senior",
+            "min_seniority_band": "mid",
+            "max_seniority_band": "staff",
+            "minimum_fit_threshold": 3.1,
+            "structured_profile_json": {
+                "targeting": {
+                    "preferred_titles": ["chief of staff"],
+                    "preferred_domains": ["ai"],
+                    "preferred_locations": ["remote"],
+                    "stage_preferences": ["series a"],
+                    "seniority": {"guess": "senior", "minimum_band": "mid", "maximum_band": "staff"},
+                },
+                "scoring": {"minimum_fit_threshold": 3.1},
+            },
+        }
+    )
+
+    by_field = {row["field"]: row["value"] for row in rows}
+    assert by_field["Preferred titles"] == "chief of staff"
+    assert by_field["Preferred domains"] == "ai"
+    assert by_field["Seniority"] == "senior (mid to staff)"
