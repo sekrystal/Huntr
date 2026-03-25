@@ -97,6 +97,8 @@ class RecommendationScoreSchema(BaseModel):
     title_fit_label: str = "unclear"
     qualification_fit_label: str = "unclear"
     role_family: str = "generalist"
+    action_label: str = "Wait"
+    action_explanation: str = ""
     component_metrics: list[RecommendationScoreComponent] = Field(default_factory=list)
     trace_inputs: dict[str, Any] = Field(default_factory=dict)
     explanation: RecommendationScoreExplanation
@@ -198,6 +200,78 @@ def _build_recommendation_explanation(
     )
 
 
+def _component_metric_lookup(component_metrics: list[dict[str, Any]], key: str) -> float:
+    for component in component_metrics:
+        if component.get("key") == key:
+            return float(component.get("score") or 0.0)
+    return 0.0
+
+
+def _recommendation_action_guidance(
+    raw_score: dict[str, Any],
+    component_metrics: list[dict[str, Any]],
+    labels: dict[str, Any],
+    evidence: dict[str, Any],
+) -> tuple[str, str]:
+    final_score = float(raw_score.get("final_score", raw_score.get("composite", 0.0)) or 0.0)
+    recommendation_band = str(raw_score.get("recommendation_band", raw_score.get("rank_label", "weak")) or "weak")
+    qualification_fit = str(labels.get("qualification_fit_label", raw_score.get("qualification_fit_label", "unclear")) or "unclear")
+    freshness_label = str(labels.get("freshness_label", raw_score.get("freshness_label", "unknown")) or "unknown")
+    lead_type = str(evidence.get("lead_type") or "listing")
+    source_quality = _component_metric_lookup(component_metrics, "source_quality")
+    novelty = _component_metric_lookup(component_metrics, "novelty")
+
+    positive_components = [component for component in component_metrics if float(component.get("score") or 0.0) > 0]
+    positive_components.sort(key=lambda component: float(component.get("score") or 0.0), reverse=True)
+    top_positive = ", ".join(
+        f"{component.get('label') or component.get('key')} {float(component.get('score') or 0.0):+.2f}"
+        for component in positive_components[:2]
+    )
+    negative_component = next(
+        (
+            component
+            for component in sorted(component_metrics, key=lambda item: float(item.get("score") or 0.0))
+            if float(component.get("score") or 0.0) < 0
+        ),
+        None,
+    )
+    negative_text = ""
+    if negative_component:
+        negative_text = (
+            f" Biggest drag: {(negative_component.get('label') or negative_component.get('key'))} "
+            f"{float(negative_component.get('score') or 0.0):+.2f}."
+        )
+
+    if qualification_fit in {"underqualified", "overqualified"} or recommendation_band == "weak" or final_score < 3.0:
+        action_label = "Skip"
+        action_explanation = (
+            f"Skip because the final score is {final_score:.2f}, band is {recommendation_band}, "
+            f"and qualification fit is {qualification_fit}."
+        )
+    elif freshness_label == "stale":
+        action_label = "Wait"
+        action_explanation = (
+            f"Wait because the final score is {final_score:.2f}, but freshness is {freshness_label}; "
+            f"recheck before spending application effort."
+        )
+    elif lead_type == "signal" or (novelty > 0 and source_quality < 1.0):
+        action_label = "Seek referral"
+        action_explanation = (
+            f"Seek referral because the final score is {final_score:.2f} and discovery leans on weaker source signals "
+            f"(novelty {novelty:+.2f}, source quality {source_quality:+.2f})."
+        )
+    else:
+        action_label = "Act now"
+        action_explanation = (
+            f"Act now because the final score is {final_score:.2f} with {recommendation_band} support and "
+            f"{freshness_label} timing."
+        )
+
+    if top_positive:
+        action_explanation = f"{action_explanation} Strongest signals: {top_positive}."
+    return action_label, f"{action_explanation}{negative_text}"
+
+
 def normalize_recommendation_score_schema(
     raw_score: dict[str, Any] | None,
     *,
@@ -234,6 +308,9 @@ def normalize_recommendation_score_schema(
         labels.get("qualification_fit_label", raw_score.get("qualification_fit_label", "unclear")) or "unclear"
     )
     normalized["role_family"] = str(raw_score.get("role_family") or "generalist")
+    action_label, action_explanation = _recommendation_action_guidance(raw_score, component_metrics, labels, evidence)
+    normalized["action_label"] = action_label
+    normalized["action_explanation"] = action_explanation
     normalized["component_metrics"] = component_metrics
     normalized["trace_inputs"] = {
         "matched_profile_fields": list(evidence.get("matched_profile_fields") or []),

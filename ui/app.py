@@ -335,6 +335,7 @@ def submit_user_job_link(
 def lead_frame(leads: list[dict[str, Any]]) -> pd.DataFrame:
     rows: list[dict[str, Any]] = []
     for lead in leads:
+        score_payload = lead.get("score_breakdown_json") or {}
         rows.append(
             {
                 "lead_id": lead["id"],
@@ -350,6 +351,7 @@ def lead_frame(leads: list[dict[str, Any]]) -> pd.DataFrame:
                 "freshness": lead["freshness_label"],
                 "fit": lead["qualification_fit_label"],
                 "confidence": lead["confidence_label"],
+                "recommendation_action": score_payload.get("action_label") or "",
                 "current_status": lead.get("current_status") or "",
                 "source": lead.get("source_platform") or lead.get("source_type") or "",
                 "provenance": lead.get("source_lineage") or lead.get("source_platform") or lead.get("source_type") or "",
@@ -398,6 +400,13 @@ def recommendation_score_summary(lead: dict[str, Any]) -> str:
     band = score_payload.get("recommendation_band") or lead.get("rank_label") or "unknown"
     confidence = score_payload.get("confidence_label") or lead.get("confidence_label") or "unknown"
     return f"Recommendation score: {float(final_score):.2f} | Band: {band} | Confidence: {confidence}"
+
+
+def recommendation_action_summary(lead: dict[str, Any]) -> str:
+    score_payload = lead.get("score_breakdown_json") or {}
+    action_label = score_payload.get("action_label") or "No action"
+    action_explanation = score_payload.get("action_explanation") or "No action guidance recorded."
+    return f"{action_label}: {action_explanation}"
 
 
 def filter_and_sort_table(table: pd.DataFrame, filters: dict[str, Any]) -> pd.DataFrame:
@@ -488,6 +497,7 @@ def render_table(leads: list[dict[str, Any]], key: str, applied_view: bool = Fal
         "posted_at",
         "company",
         "title",
+        "recommendation_action",
         "provenance",
         "lead_type",
         "freshness",
@@ -513,6 +523,7 @@ def render_table(leads: list[dict[str, Any]], key: str, applied_view: bool = Fal
             "open_url": st.column_config.LinkColumn("Open", display_text="open", validate="^https?://"),
             "surfaced_at": "Surfaced",
             "posted_at": "Posted",
+            "recommendation_action": "Recommendation",
             "lead_type": "Type",
             "provenance": "Provenance",
             "freshness": "Freshness",
@@ -549,6 +560,7 @@ def render_detail(lead: dict[str, Any], key: str) -> None:
     st.subheader(f"{lead['company_name']} — {lead['primary_title']}")
     st.write(lead.get("explanation") or "No explanation recorded.")
     st.caption(recommendation_score_summary(lead))
+    st.info(recommendation_action_summary(lead))
 
     summary = st.columns(6)
     summary[0].write(f"Type: `{lead['lead_type']}`")
@@ -602,6 +614,9 @@ def render_detail(lead: dict[str, Any], key: str) -> None:
             supporting_points = score_explanation.get("supporting_points") or []
             if supporting_points:
                 st.write("Score context: " + " | ".join(supporting_points))
+        if score_payload.get("action_label") or score_payload.get("action_explanation"):
+            st.write("Recommended action: " + (score_payload.get("action_label") or "none"))
+            st.caption(score_payload.get("action_explanation") or "No action explanation recorded.")
         score_rows = recommendation_score_rows(lead)
         if not score_rows.empty:
             st.dataframe(score_rows, use_container_width=True, hide_index=True)

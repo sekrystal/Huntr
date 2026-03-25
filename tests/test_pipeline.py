@@ -114,11 +114,79 @@ def test_lead_response_normalizes_recommendation_score_schema_with_traceable_com
     assert score_payload["schema_version"] == "v1"
     assert score_payload["final_score"] == 8.4
     assert score_payload["recommendation_band"] == "strong"
+    assert score_payload["action_label"] == "Act now"
+    assert "final score is 8.40" in score_payload["action_explanation"]
+    assert "Title alignment +2.40" in score_payload["action_explanation"]
     assert score_payload["explanation"]["headline"] == "Strong recommendation at 8.40 with high confidence."
     assert score_payload["trace_inputs"]["matched_profile_fields"] == ["core title", "scope match"]
     assert any(component["key"] == "freshness" for component in score_payload["component_metrics"])
     title_fit_component = next(component for component in score_payload["component_metrics"] if component["key"] == "title_fit")
     assert "title_fit_label=core match" in title_fit_component["trace_inputs"]
+
+
+def test_lead_response_normalizes_signal_only_roles_to_seek_referral_guidance() -> None:
+    lead = LeadResponse(
+        id=2,
+        lead_type="signal",
+        company_name="Stealth AI",
+        primary_title="Business Operations Lead",
+        url=None,
+        source_type="x",
+        listing_status="unknown",
+        first_published_at=None,
+        discovered_at=None,
+        last_seen_at=None,
+        updated_at=None,
+        freshness_hours=4.0,
+        freshness_days=0,
+        posted_at=None,
+        surfaced_at="2026-03-25T12:00:00Z",
+        rank_label="good",
+        confidence_label="medium",
+        freshness_label="fresh",
+        title_fit_label="adjacent match",
+        qualification_fit_label="strong fit",
+        source_platform="x",
+        source_provenance=None,
+        source_lineage="x",
+        discovery_source="search",
+        saved=False,
+        applied=False,
+        current_status=None,
+        date_saved=None,
+        date_applied=None,
+        application_notes=None,
+        application_updated_at=None,
+        next_action=None,
+        follow_up_due=False,
+        explanation="Signal-only lead with plausible hiring evidence.",
+        last_agent_action=None,
+        hidden=False,
+        score_breakdown_json={
+            "composite": 5.6,
+            "novelty": 0.7,
+            "source_quality": 0.4,
+            "title_fit": 1.9,
+            "evidence_quality": 0.8,
+            "negative_signals": -0.1,
+            "rank_label": "good",
+            "confidence_label": "medium",
+            "role_family": "operations",
+        },
+        evidence_json={
+            "matched_profile_fields": ["adjacent title"],
+            "feedback_notes": [],
+            "source_platform": "x",
+            "source_lineage": "x",
+            "listing_status": "unknown",
+        },
+    )
+
+    score_payload = lead.score_breakdown_json
+
+    assert score_payload["action_label"] == "Seek referral"
+    assert "novelty +0.70" in score_payload["action_explanation"]
+    assert "source quality +0.40" in score_payload["action_explanation"]
 
 
 def test_recommendation_score_helpers_support_legacy_and_structured_payloads() -> None:

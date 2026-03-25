@@ -104,6 +104,55 @@ def test_filter_and_sort_table_sorts_by_freshness_and_date() -> None:
     assert filtered["company"].tolist() == ["FreshCo", "RecentCo"]
 
 
+def test_lead_frame_includes_recommendation_action_label() -> None:
+    frame = ui_app.lead_frame(
+        [
+            {
+                "id": 1,
+                "url": "https://example.com/job",
+                "surfaced_at": "2026-03-18T10:00:00Z",
+                "posted_at": "2026-03-17T10:00:00Z",
+                "application_updated_at": None,
+                "company_name": "Mercor",
+                "primary_title": "Deployment Strategist",
+                "lead_type": "combined",
+                "freshness_label": "fresh",
+                "qualification_fit_label": "strong fit",
+                "confidence_label": "high",
+                "current_status": "",
+                "source_platform": "greenhouse",
+                "source_type": "greenhouse",
+                "source_lineage": "greenhouse",
+                "evidence_json": {},
+                "last_agent_action": "",
+                "saved": False,
+                "applied": False,
+                "date_saved": None,
+                "date_applied": None,
+                "application_notes": "",
+                "next_action": None,
+                "follow_up_due": False,
+                "score_breakdown_json": {"action_label": "Act now"},
+            }
+        ]
+    )
+
+    assert frame["recommendation_action"].tolist() == ["Act now"]
+
+
+def test_recommendation_action_summary_uses_action_label_and_explanation() -> None:
+    summary = ui_app.recommendation_action_summary(
+        {
+            "score_breakdown_json": {
+                "action_label": "Seek referral",
+                "action_explanation": "Seek referral because the source signal is still weak.",
+            }
+        }
+    )
+
+    assert summary == "Seek referral: Seek referral because the source signal is still weak."
+
+
 def test_fetch_json_returns_empty_leads_payload_on_request_failure(monkeypatch) -> None:
     captured: list[str] = []
     captured_timeout: list[int] = []
