@@ -4,7 +4,8 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from core.models import Base
-from services.profile import extract_text_from_resume_upload, get_candidate_profile, ingest_resume
+from core.schemas import CandidateProfilePayload, StructuredCandidateProfile
+from services.profile import extract_text_from_resume_upload, get_candidate_profile, ingest_resume, profile_to_payload, update_candidate_profile
 
 
 def test_resume_ingestion_populates_candidate_profile() -> None:
@@ -25,6 +26,68 @@ def test_resume_ingestion_populates_candidate_profile() -> None:
     assert result.resume_document_id is not None
     assert "chief of staff" in profile.preferred_titles_json
     assert profile.seniority_guess in {"senior", "staff"}
+    assert profile.extracted_summary_json["profile_schema_version"] == "v1"
+    assert profile.extracted_summary_json["structured_profile"]["targeting"]["preferred_titles"]
+
+
+def test_candidate_profile_payload_builds_structured_schema_from_flat_fields() -> None:
+    payload = CandidateProfilePayload(
+        preferred_titles_json=["chief of staff", "operator"],
+        core_titles_json=["chief of staff"],
+        preferred_domains_json=["ai"],
+        preferred_locations_json=["remote"],
+        excluded_companies_json=["BigCo"],
+        stage_preferences_json=["series a"],
+        stretch_role_families_json=["operations"],
+        excluded_keywords_json=["phd required"],
+        seniority_guess="senior",
+        min_seniority_band="mid",
+        max_seniority_band="staff",
+        minimum_fit_threshold=3.2,
+    )
+
+    assert payload.profile_schema_version == "v1"
+    assert payload.structured_profile_json is not None
+    assert payload.structured_profile_json.targeting.preferred_titles == ["chief of staff", "operator"]
+    assert payload.structured_profile_json.targeting.seniority.maximum_band == "staff"
+    assert payload.structured_profile_json.scoring.minimum_fit_threshold == 3.2
+
+
+def test_update_candidate_profile_syncs_structured_schema_back_to_flat_fields() -> None:
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(engine)
+    session = sessionmaker(bind=engine, expire_on_commit=False)()
+
+    payload = CandidateProfilePayload(
+        name="Structured Candidate",
+        structured_profile_json=StructuredCandidateProfile(
+            version="v1",
+            targeting={
+                "preferred_titles": ["founding operations lead"],
+                "core_titles": ["founding operations lead"],
+                "adjacent_titles": ["chief of staff"],
+                "excluded_titles": ["intern"],
+                "preferred_domains": ["developer tools"],
+                "preferred_locations": ["san francisco"],
+                "excluded_companies": ["BigCo"],
+                "stage_preferences": ["seed"],
+                "stretch_role_families": ["go_to_market"],
+                "excluded_keywords": ["clearance required"],
+                "seniority": {"guess": "senior", "minimum_band": "mid", "maximum_band": "staff"},
+            },
+            scoring={"minimum_fit_threshold": 3.4},
+        ),
+    )
+
+    profile = update_candidate_profile(session, payload)
+    refreshed = profile_to_payload(profile)
+
+    assert profile.preferred_titles_json == ["founding operations lead"]
+    assert profile.stage_preferences_json == ["seed"]
+    assert profile.minimum_fit_threshold == 3.4
+    assert profile.extracted_summary_json["structured_profile"]["scoring"]["minimum_fit_threshold"] == 3.4
+    assert refreshed.structured_profile_json is not None
+    assert refreshed.structured_profile_json.targeting.preferred_domains == ["developer tools"]
 
 
 def test_text_resume_upload_extraction() -> None:

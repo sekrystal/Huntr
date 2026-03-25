@@ -488,12 +488,24 @@ def render_profile_tab(profile: dict[str, Any], learning: dict[str, Any]) -> Non
             st.error(f"Resume parsing failed: {exc}")
 
     with st.form("profile-form"):
+        name = st.text_input("Profile name", value=profile.get("name", "Demo Candidate"))
+        preferred_titles = st.text_input("Preferred titles", value=", ".join(profile.get("preferred_titles_json", [])))
         core_titles = st.text_input("Core titles", value=", ".join(profile.get("core_titles_json", [])))
         adjacent_titles = st.text_input("Adjacent titles", value=", ".join(profile.get("adjacent_titles_json", [])))
         excluded_titles = st.text_input("Excluded titles", value=", ".join(profile.get("excluded_titles_json", [])))
         preferred_domains = st.text_input("Preferred domains", value=", ".join(profile.get("preferred_domains_json", [])))
         preferred_locations = st.text_input("Preferred locations", value=", ".join(profile.get("preferred_locations_json", [])))
         excluded_companies = st.text_input("Excluded companies", value=", ".join(profile.get("excluded_companies_json", [])))
+        stage_preferences = st.text_input("Preferred stages", value=", ".join(profile.get("stage_preferences_json", [])))
+        stretch_role_families = st.text_input("Stretch role families", value=", ".join(profile.get("stretch_role_families_json", [])))
+        excluded_keywords = st.text_input("Excluded keywords", value=", ".join(profile.get("excluded_keywords_json", [])))
+        minimum_fit_threshold = st.number_input(
+            "Minimum fit threshold",
+            min_value=0.0,
+            max_value=5.0,
+            step=0.1,
+            value=float(profile.get("minimum_fit_threshold", 2.8)),
+        )
         bands = ["entry", "junior", "mid", "senior", "staff", "executive"]
         min_seniority = st.selectbox("Min seniority", bands, index=bands.index(profile.get("min_seniority_band", "mid")))
         max_seniority = st.selectbox("Max seniority", bands, index=bands.index(profile.get("max_seniority_band", "senior")))
@@ -502,27 +514,29 @@ def render_profile_tab(profile: dict[str, Any], learning: dict[str, Any]) -> Non
                 "/candidate-profile",
                 method="POST",
                 payload={
-                    "name": profile.get("name", "Demo Candidate"),
+                    "profile_schema_version": profile.get("profile_schema_version", "v1"),
+                    "name": name,
                     "raw_resume_text": profile.get("raw_resume_text", ""),
                     "extracted_summary_json": profile.get("extracted_summary_json", {}),
-                    "preferred_titles_json": profile.get("preferred_titles_json", []),
+                    "preferred_titles_json": parse_csv(preferred_titles),
                     "adjacent_titles_json": parse_csv(adjacent_titles),
                     "excluded_titles_json": parse_csv(excluded_titles),
                     "preferred_domains_json": parse_csv(preferred_domains),
                     "excluded_companies_json": parse_csv(excluded_companies),
                     "preferred_locations_json": parse_csv(preferred_locations),
                     "seniority_guess": profile.get("seniority_guess"),
-                    "stage_preferences_json": profile.get("stage_preferences_json", []),
+                    "stage_preferences_json": parse_csv(stage_preferences),
                     "core_titles_json": parse_csv(core_titles),
-                    "excluded_keywords_json": profile.get("excluded_keywords_json", []),
+                    "excluded_keywords_json": parse_csv(excluded_keywords),
                     "min_seniority_band": min_seniority,
                     "max_seniority_band": max_seniority,
-                    "stretch_role_families_json": profile.get("stretch_role_families_json", []),
-                    "minimum_fit_threshold": profile.get("minimum_fit_threshold", 2.8),
+                    "stretch_role_families_json": parse_csv(stretch_role_families),
+                    "minimum_fit_threshold": minimum_fit_threshold,
                 },
             )
             st.rerun()
 
+    st.caption(f"Profile schema: {profile.get('profile_schema_version', 'v1')}")
     st.caption(profile.get("extracted_summary_json", {}).get("summary", "No profile summary yet."))
     learning_df = pd.DataFrame(
         {

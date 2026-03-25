@@ -39,6 +39,7 @@ SENIORITY_KEYWORDS = {
     "founder": "executive",
     "vp": "executive",
 }
+PROFILE_SCHEMA_KEY = "structured_profile"
 
 
 def _match_known_terms(text: str, choices: list[str]) -> list[str]:
@@ -116,6 +117,7 @@ def get_candidate_profile(session: Session) -> CandidateProfile:
         return existing
 
     payload = CandidateProfilePayload(
+        profile_schema_version="v1",
         name="Demo Candidate",
         preferred_titles_json=["chief of staff", "founding operations lead", "deployment strategist"],
         adjacent_titles_json=["business operations", "implementation lead", "technical product manager"],
@@ -132,17 +134,22 @@ def get_candidate_profile(session: Session) -> CandidateProfile:
         minimum_fit_threshold=2.8,
         extracted_summary_json={"summary": "Default demo profile focused on early-stage operating roles."},
     )
-    profile = CandidateProfile(**payload.model_dump())
+    payload = _with_structured_profile(payload)
+    profile = CandidateProfile(**_profile_model_values(payload))
+    profile.extracted_summary_json = _merge_structured_profile(profile.extracted_summary_json or {}, payload)
     session.add(profile)
     session.flush()
     return profile
 
 
 def profile_to_payload(profile: CandidateProfile) -> CandidateProfilePayload:
-    return CandidateProfilePayload(
+    extracted_summary = profile.extracted_summary_json or {}
+    structured_profile = extracted_summary.get(PROFILE_SCHEMA_KEY)
+    payload = CandidateProfilePayload(
+        profile_schema_version=structured_profile.get("version", "v1") if structured_profile else "v1",
         name=profile.name,
         raw_resume_text=profile.raw_resume_text,
-        extracted_summary_json=profile.extracted_summary_json or {},
+        extracted_summary_json=extracted_summary,
         preferred_titles_json=profile.preferred_titles_json or [],
         adjacent_titles_json=profile.adjacent_titles_json or [],
         excluded_titles_json=profile.excluded_titles_json or [],
@@ -157,13 +164,19 @@ def profile_to_payload(profile: CandidateProfile) -> CandidateProfilePayload:
         max_seniority_band=profile.max_seniority_band,
         stretch_role_families_json=profile.stretch_role_families_json or [],
         minimum_fit_threshold=profile.minimum_fit_threshold,
+        structured_profile_json=structured_profile,
     )
+    return _with_structured_profile(payload)
 
 
 def update_candidate_profile(session: Session, payload: CandidateProfilePayload) -> CandidateProfile:
+    payload = _with_structured_profile(payload)
     profile = get_candidate_profile(session)
     for key, value in payload.model_dump().items():
+        if key in {"profile_schema_version", "structured_profile_json"}:
+            continue
         setattr(profile, key, value)
+    profile.extracted_summary_json = _merge_structured_profile(profile.extracted_summary_json or {}, payload)
     session.flush()
     return profile
 
@@ -189,6 +202,11 @@ def ingest_resume(session: Session, filename: str, raw_text: str) -> ResumeUploa
     profile.min_seniority_band = parsed["min_seniority_band"]
     profile.max_seniority_band = parsed["max_seniority_band"]
     profile.stretch_role_families_json = parsed["stretch_role_families_json"]
+    payload = _with_structured_profile(profile_to_payload(profile))
+    profile.extracted_summary_json = _merge_structured_profile(
+        {"summary": parsed["summary"], "resume_filename": filename},
+        payload,
+    )
 
     session.flush()
     return ResumeUploadResponse(
@@ -210,3 +228,18 @@ def build_learning_summary(profile: CandidateProfile) -> LearningSummary:
         penalized_sources=penalized_sources,
         generated_queries=generated_queries,
     )
+
+
+def _with_structured_profile(payload: CandidateProfilePayload) -> CandidateProfilePayload:
+    return CandidateProfilePayload(**payload.model_dump())
+
+
+def _merge_structured_profile(extracted_summary_json: dict, payload: CandidateProfilePayload) -> dict:
+    merged = dict(extracted_summary_json)
+    merged["profile_schema_version"] = payload.profile_schema_version
+    merged[PROFILE_SCHEMA_KEY] = payload.structured_profile_json.model_dump() if payload.structured_profile_json else {}
+    return merged
+
+
+def _profile_model_values(payload: CandidateProfilePayload) -> dict:
+    return payload.model_dump(exclude={"profile_schema_version", "structured_profile_json"})

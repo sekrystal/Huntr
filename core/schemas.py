@@ -59,6 +59,7 @@ class ListingRecord(BaseModel):
 
 
 class CandidateProfilePayload(BaseModel):
+    profile_schema_version: str = "v1"
     name: str = "Demo Candidate"
     raw_resume_text: str = ""
     extracted_summary_json: dict[str, Any] = Field(default_factory=dict)
@@ -76,6 +77,80 @@ class CandidateProfilePayload(BaseModel):
     max_seniority_band: str = "senior"
     stretch_role_families_json: list[str] = Field(default_factory=list)
     minimum_fit_threshold: float = 2.8
+    structured_profile_json: Optional["StructuredCandidateProfile"] = None
+
+    @model_validator(mode="after")
+    def sync_structured_profile(self) -> "CandidateProfilePayload":
+        if self.structured_profile_json is None:
+            self.structured_profile_json = StructuredCandidateProfile(
+                version=self.profile_schema_version,
+                targeting=ProfileTargetingPreferences(
+                    preferred_titles=self.preferred_titles_json,
+                    core_titles=self.core_titles_json,
+                    adjacent_titles=self.adjacent_titles_json,
+                    excluded_titles=self.excluded_titles_json,
+                    preferred_domains=self.preferred_domains_json,
+                    preferred_locations=self.preferred_locations_json,
+                    excluded_companies=self.excluded_companies_json,
+                    stage_preferences=self.stage_preferences_json,
+                    stretch_role_families=self.stretch_role_families_json,
+                    excluded_keywords=self.excluded_keywords_json,
+                    seniority=ProfileSeniorityPreferences(
+                        guess=self.seniority_guess,
+                        minimum_band=self.min_seniority_band,
+                        maximum_band=self.max_seniority_band,
+                    ),
+                ),
+                scoring=ProfileScoringPreferences(minimum_fit_threshold=self.minimum_fit_threshold),
+            )
+        else:
+            self.profile_schema_version = self.structured_profile_json.version
+            targeting = self.structured_profile_json.targeting
+            self.preferred_titles_json = list(targeting.preferred_titles)
+            self.core_titles_json = list(targeting.core_titles)
+            self.adjacent_titles_json = list(targeting.adjacent_titles)
+            self.excluded_titles_json = list(targeting.excluded_titles)
+            self.preferred_domains_json = list(targeting.preferred_domains)
+            self.preferred_locations_json = list(targeting.preferred_locations)
+            self.excluded_companies_json = list(targeting.excluded_companies)
+            self.stage_preferences_json = list(targeting.stage_preferences)
+            self.stretch_role_families_json = list(targeting.stretch_role_families)
+            self.excluded_keywords_json = list(targeting.excluded_keywords)
+            self.seniority_guess = targeting.seniority.guess
+            self.min_seniority_band = targeting.seniority.minimum_band
+            self.max_seniority_band = targeting.seniority.maximum_band
+            self.minimum_fit_threshold = self.structured_profile_json.scoring.minimum_fit_threshold
+        return self
+
+
+class ProfileSeniorityPreferences(BaseModel):
+    guess: Optional[str] = None
+    minimum_band: str = "mid"
+    maximum_band: str = "senior"
+
+
+class ProfileTargetingPreferences(BaseModel):
+    preferred_titles: list[str] = Field(default_factory=list)
+    core_titles: list[str] = Field(default_factory=list)
+    adjacent_titles: list[str] = Field(default_factory=list)
+    excluded_titles: list[str] = Field(default_factory=list)
+    preferred_domains: list[str] = Field(default_factory=list)
+    preferred_locations: list[str] = Field(default_factory=list)
+    excluded_companies: list[str] = Field(default_factory=list)
+    stage_preferences: list[str] = Field(default_factory=list)
+    stretch_role_families: list[str] = Field(default_factory=list)
+    excluded_keywords: list[str] = Field(default_factory=list)
+    seniority: ProfileSeniorityPreferences = Field(default_factory=ProfileSeniorityPreferences)
+
+
+class ProfileScoringPreferences(BaseModel):
+    minimum_fit_threshold: float = 2.8
+
+
+class StructuredCandidateProfile(BaseModel):
+    version: str = "v1"
+    targeting: ProfileTargetingPreferences = Field(default_factory=ProfileTargetingPreferences)
+    scoring: ProfileScoringPreferences = Field(default_factory=ProfileScoringPreferences)
 
 
 class ResumeUploadRequest(BaseModel):
