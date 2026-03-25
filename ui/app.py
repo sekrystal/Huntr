@@ -77,6 +77,15 @@ def parse_csv(value: str) -> list[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
 
 
+def discovery_query_family_frame(cycle_metrics: dict[str, Any]) -> pd.DataFrame:
+    rows: list[dict[str, Any]] = []
+    for query_family, metrics in sorted((cycle_metrics.get("query_family_metrics") or {}).items()):
+        row = {"query_family": query_family}
+        row.update(metrics or {})
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
 def format_timestamp(value: Optional[str]) -> str:
     if not value:
         return ""
@@ -688,6 +697,10 @@ def render_discovery_tab() -> None:
             f"new ashby identifiers={cycle_metrics.get('discovered_ashby_identifiers_new_count', 0)}, "
             f"agent-discovered visible leads={cycle_metrics.get('agent_discovered_visible_leads_count', 0)}"
         )
+        query_family_df = discovery_query_family_frame(cycle_metrics)
+        if not query_family_df.empty:
+            st.markdown("#### Query Family Diagnostics")
+            st.dataframe(query_family_df, use_container_width=True, hide_index=True)
     openai_usage = payload.get("latest_openai_usage") or {}
     if openai_usage:
         st.caption(

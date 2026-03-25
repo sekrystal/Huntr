@@ -57,12 +57,31 @@ BLOCKED_AGGREGATOR_HOSTS = ["linkedin.com", "indeed.com", "glassdoor.com", "zipr
 PROVIDER_OWNED_HOSTS = {"duckduckgo.com", "www.duckduckgo.com"}
 
 
+def classify_query_family(query_text: str) -> str:
+    normalized = (query_text or "").strip().lower()
+    if not normalized:
+        return "unknown"
+    if normalized.startswith("site:job-boards.greenhouse.io") or normalized.startswith("site:jobs.ashbyhq.com"):
+        return "ats_direct"
+    if "greenhouse" in normalized or "ashby" in normalized:
+        return "ats_hint"
+    if "startup" in normalized or "careers" in normalized or "jobs" in normalized:
+        quoted_terms = normalized.count('"')
+        if quoted_terms >= 4 and "startup" not in normalized:
+            return "company_targeted"
+        if "remote us" in normalized or "company careers" in normalized:
+            return "careers_broad"
+        return "role_market"
+    return "general"
+
+
 @dataclass
 class SearchDiscoveryResult:
     query_text: str
     title: str
     url: str
     source_surface: str = "duckduckgo_html"
+    query_family: str = "unknown"
 
 
 @dataclass
@@ -289,7 +308,14 @@ def _parse_search_results_from_html(
                 rejected_urls.append(href)
                 rejected_reasons.append(reason)
             continue
-        accepted.append(SearchDiscoveryResult(query_text=query_text, title=title or _fallback_title_from_url(href), url=href))
+        accepted.append(
+            SearchDiscoveryResult(
+                query_text=query_text,
+                title=title or _fallback_title_from_url(href),
+                url=href,
+                query_family=classify_query_family(query_text),
+            )
+        )
         accepted_urls.append(href)
         accepted_reasons.append(reason)
         if len(accepted) >= result_limit:
@@ -310,7 +336,14 @@ def _parse_search_results_from_html(
                 rejected_urls.append(href)
                 rejected_reasons.append(reason)
             continue
-        accepted.append(SearchDiscoveryResult(query_text=query_text, title=_fallback_title_from_url(href), url=href))
+        accepted.append(
+            SearchDiscoveryResult(
+                query_text=query_text,
+                title=_fallback_title_from_url(href),
+                url=href,
+                query_family=classify_query_family(query_text),
+            )
+        )
         accepted_urls.append(href)
         accepted_reasons.append(reason)
         if len(accepted) >= result_limit:
@@ -468,6 +501,7 @@ def derive_search_results_from_extraction(
                 title=f"{title} [greenhouse:{token}]",
                 url=f"https://job-boards.greenhouse.io/{token}/jobs",
                 source_surface=source_surface,
+                query_family=classify_query_family(query_text),
             )
         )
     for org in extraction.ashby_identifiers:
@@ -477,6 +511,7 @@ def derive_search_results_from_extraction(
                 title=f"{title} [ashby:{org}]",
                 url=f"https://jobs.ashbyhq.com/{org}",
                 source_surface=source_surface,
+                query_family=classify_query_family(query_text),
             )
         )
     return results

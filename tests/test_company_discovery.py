@@ -224,6 +224,12 @@ def test_discovery_status_returns_recent_items() -> None:
                     "agent_discovered_visible_leads_count": 1,
                     "accepted_urls_sample": ["https://job-boards.greenhouse.io/example"],
                     "dropped_urls_sample": ["https://linkedin.com/jobs/1"],
+                    "query_family_metrics": {
+                        "company_targeted": {
+                            "queries_attempted": 1,
+                            "selected_for_expansion": 1,
+                        }
+                    },
                 }
             },
         )
@@ -247,6 +253,8 @@ def test_discovery_status_returns_recent_items() -> None:
     assert status.latest_openai_usage == {"planner": True, "triage": False, "learning": True}
     assert status.cycle_metrics["discovered_companies_new_count"] == 2
     assert status.cycle_metrics["accepted_urls_sample"] == ["https://job-boards.greenhouse.io/example"]
+    assert status.cycle_metrics["query_family_metrics"]["company_targeted"]["queries_attempted"] == 1
+    assert status.cycle_metrics["query_family_metrics"]["company_targeted"]["selected_for_expansion"] == 1
     assert status.recent_successful_expansions
 
 
@@ -330,6 +338,20 @@ def test_discovery_status_uses_latest_relevant_runs_beyond_recent_window() -> No
     assert status.latest_openai_usage == {"planner": True, "triage": True, "learning": False}
     assert status.cycle_metrics["agent_discovered_visible_leads_count"] == 0
     assert status.cycle_metrics["accepted_results_count"] == 0
+
+
+def test_candidate_from_search_result_preserves_query_family() -> None:
+    candidate = candidate_from_search_result(
+        SearchDiscoveryResult(
+            query_text='site:job-boards.greenhouse.io "chief of staff"',
+            title="Chief of Staff - Example",
+            url="https://job-boards.greenhouse.io/example/jobs/1",
+            query_family="ats_direct",
+        )
+    )
+
+    assert candidate is not None
+    assert candidate.query_family == "ats_direct"
 
 
 def test_discovery_status_includes_latest_empty_expansion_for_older_company() -> None:

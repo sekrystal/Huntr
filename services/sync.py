@@ -15,6 +15,7 @@ from connectors.greenhouse import GreenhouseConnector
 from connectors.search_web import (
     SearchDiscoveryConnector,
     build_search_queries,
+    classify_query_family,
 )
 from connectors.x_search import XSearchConnector
 from core.config import get_settings
@@ -52,6 +53,17 @@ from services.resolve_company import get_or_create_company, queue_recheck, resol
 
 
 logger = get_logger(__name__)
+
+
+def _bump_query_family_metric(
+    metrics: dict[str, dict[str, int]],
+    query_family: str | None,
+    field: str,
+    amount: int = 1,
+) -> None:
+    family = query_family or "unknown"
+    metrics.setdefault(family, {})
+    metrics[family][field] = int(metrics[family].get(field, 0)) + amount
 
 
 def _source_learning(profile) -> dict:
@@ -745,6 +757,7 @@ def sync_all(
     discovery_metrics: dict[str, dict[str, int]] = {}
     discovery_status: dict[str, object] = {}
     cycle_metrics: Counter[str] = Counter()
+    query_family_metrics: dict[str, dict[str, int]] = {}
     ai_fit_runtime_state = {"remaining": settings.ai_fit_max_calls_per_cycle}
 
     watchlist_values = [
@@ -756,6 +769,8 @@ def sync_all(
     planner_plan = planner_agent(session, profile, settings=settings)
     query_inputs = build_query_inputs(session, profile)
     search_queries = planner_plan["queries"][: settings.discovery_max_search_queries_per_cycle]
+    for query_text in search_queries:
+        _bump_query_family_metric(query_family_metrics, classify_query_family(query_text), "queries_attempted")
     logger.info(
         "[PLANNER_PLAN] %s",
         {
@@ -886,6 +901,7 @@ def sync_all(
             inspection = inspect_search_result_candidate(result)
             candidate = candidate_from_search_result(result)
             if not candidate:
+                _bump_query_family_metric(query_family_metrics, result.query_family, "dropped_results")
                 dropped_results.append(
                     {
                         "url": inspection["normalized_url"] or result.url,
@@ -905,6 +921,7 @@ def sync_all(
                 )
                 continue
             convertible_candidate_count += 1
+            _bump_query_family_metric(query_family_metrics, candidate.query_family, "accepted_results")
             logger.info(
                 "[DISCOVERY_CANDIDATE_CONVERSION] %s",
                 {
@@ -913,6 +930,7 @@ def sync_all(
                     "path": inspection["path"],
                     "board_type": candidate.board_type,
                     "board_locator": candidate.board_locator,
+                    "query_family": candidate.query_family,
                     "reason": "converted",
                 },
             )
@@ -953,6 +971,7 @@ def sync_all(
                 }
             row.metadata_json = {
                 **(row.metadata_json or {}),
+                "query_family": candidate.query_family,
                 "triage_decision": triage_decision,
                 "surface_provenance": surface_provenance,
                 "source_lineage": source_lineage,
@@ -960,6 +979,7 @@ def sync_all(
                 **extra_metadata,
             }
             discovery_rows_touched.append(row)
+            _bump_query_family_metric(query_family_metrics, candidate.query_family, "candidate_conversions")
             candidate.is_new = is_new
             if is_new:
                 new_discovery_count += 1
@@ -970,6 +990,7 @@ def sync_all(
                         "company": candidate.company_name,
                         "board_type": candidate.board_type,
                         "board_locator": candidate.board_locator,
+                        "query_family": candidate.query_family,
                         "surface_provenance": surface_provenance,
                         "source_lineage": source_lineage,
                         "query": candidate.discovery_query,
@@ -984,6 +1005,7 @@ def sync_all(
                         "company": candidate.company_name,
                         "board_type": candidate.board_type,
                         "board_locator": candidate.board_locator,
+                        "query_family": candidate.query_family,
                         "surface_provenance": surface_provenance,
                         "source_lineage": source_lineage,
                         "query": candidate.discovery_query,
@@ -1029,6 +1051,9 @@ def sync_all(
         cycle_metrics["accepted_urls_sample"] = [result.url for result in search_results[:10]]
         cycle_metrics["dropped_urls_sample"] = [item["url"] for item in dropped_results[:10]]
         selected_discoveries = select_candidates_for_expansion(candidate_rows, settings=settings)
+        for candidate, _, _, _ in selected_discoveries:
+            _bump_query_family_metric(query_family_metrics, candidate.query_family, "selected_for_expansion")
+            _bump_query_family_metric(query_family_metrics, candidate.query_family, f"{candidate.board_type}_selected")
         selected_discovery_rows_by_key = {row.discovery_key: row for _, row, _, _ in selected_discoveries}
         for candidate, row, score, reasons in selected_discoveries:
             provenance = (row.metadata_json or {}).get("surface_provenance")
@@ -1038,6 +1063,7 @@ def sync_all(
                     "company": candidate.company_name,
                     "board_type": candidate.board_type,
                     "board_locator": candidate.board_locator,
+                    "query_family": candidate.query_family,
                     "surface_provenance": provenance,
                     "source_lineage": (row.metadata_json or {}).get("source_lineage"),
                     "score": score,
@@ -1244,6 +1270,7 @@ def sync_all(
                 "company": candidate.company_name,
                 "board_type": candidate.board_type,
                 "board_locator": candidate.board_locator,
+                "query_family": candidate.query_family,
                 "surface_provenance": provenance,
                 "source_lineage": (row.metadata_json or {}).get("source_lineage"),
                 "result_count": result_count,
@@ -1252,11 +1279,15 @@ def sync_all(
             },
         )
         cycle_metrics[f"{candidate.board_type}_expansion_attempts"] += 1
+        _bump_query_family_metric(query_family_metrics, candidate.query_family, "expansion_attempts")
         if result_count > 0:
             cycle_metrics[f"{candidate.board_type}_expansion_successes"] += 1
             cycle_metrics[f"{candidate.board_type}_listings_yielded"] += result_count
+            _bump_query_family_metric(query_family_metrics, candidate.query_family, "expansions_with_listings")
+            _bump_query_family_metric(query_family_metrics, candidate.query_family, "listings_yielded", result_count)
         else:
             cycle_metrics[f"{candidate.board_type}_empty_expansions"] += 1
+            _bump_query_family_metric(query_family_metrics, candidate.query_family, "empty_expansions")
         if provenance in {"discovered_existing", "discovered_new"} and result_count > 0:
             cycle_metrics[f"agent_discovered_{candidate.board_type}_expansion_successes"] += 1
         logger.info(
@@ -1610,6 +1641,7 @@ def sync_all(
     learning_update = learning_agent(session, profile, settings=settings)
     cycle_metrics["ai_fit_calls_remaining"] = ai_fit_runtime_state["remaining"]
     cycle_metrics["ai_fit_calls_used"] = max(settings.ai_fit_max_calls_per_cycle - ai_fit_runtime_state["remaining"], 0)
+    cycle_metrics["query_family_metrics"] = query_family_metrics
     logger.info(
         "[LEARNING_UPDATE] %s",
         {

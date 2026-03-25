@@ -55,6 +55,7 @@ class CompanyDiscoveryCandidate:
     board_locator: str
     result_url: str
     result_title: str
+    query_family: str = "unknown"
     triage_score: float = 0.0
     triage_reasons: list[str] = field(default_factory=list)
     is_new: bool = False
@@ -129,6 +130,7 @@ def candidate_from_search_result(result: SearchDiscoveryResult) -> CompanyDiscov
         normalized_company_key=normalize_company_key(company_name, company_domain),
         discovery_source=result.source_surface,
         discovery_query=result.query_text,
+        query_family=result.query_family,
         board_type=board_type,
         board_locator=board_locator,
         result_url=inspection["normalized_url"] or result.url,
@@ -225,6 +227,7 @@ def upsert_discovered_company(
     metadata = {
         "result_url": candidate.result_url,
         "result_title": candidate.result_title,
+        "query_family": candidate.query_family,
         "triage_score": triage_score,
         "triage_reasons": triage_reasons,
     }

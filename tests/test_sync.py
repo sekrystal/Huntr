@@ -6,6 +6,7 @@ import logging
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+from connectors.search_web import SearchDiscoveryResult
 from core.config import Settings
 from core.models import AgentRun, Base, CandidateProfile, Lead, Listing
 from services.pipeline import run_critic_agent
@@ -690,6 +691,66 @@ def test_sync_all_caps_ai_fit_calls_per_cycle(monkeypatch) -> None:
 
     assert call_counter["count"] == 1
     assert result.discovery_status["cycle_metrics"]["ai_fit_calls_used"] == 1
+
+
+def test_sync_all_persists_query_family_metrics(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(engine)
+    session = sessionmaker(bind=engine, expire_on_commit=False)()
+    _seed_profile(session)
+
+    monkeypatch.setattr(sync_service, "get_candidate_profile", lambda _session: session.query(CandidateProfile).first())
+    monkeypatch.setattr(sync_service, "ensure_source_queries", lambda _session: [])
+    monkeypatch.setattr(sync_service, "generate_follow_up_tasks", lambda _session: 0)
+    monkeypatch.setattr(
+        sync_service,
+        "planner_agent",
+        lambda *_args, **_kwargs: {
+            "queries": ['site:job-boards.greenhouse.io "operations lead"'],
+            "query_themes": ["ats_direct"],
+            "company_archetypes": [],
+            "priority_notes": [],
+        },
+    )
+    monkeypatch.setattr(sync_service, "extractor_agent", lambda *_args, **_kwargs: ([], []))
+    monkeypatch.setattr(sync_service, "learning_agent", lambda *_args, **_kwargs: {"next_queries": [], "focus_companies": [], "notes": []})
+
+    def fake_triage_agent(*, session, profile, candidate, configured_boards, settings):
+        return 3.2, ["deterministic test"], "pursue"
+
+    monkeypatch.setattr(sync_service, "triage_agent", fake_triage_agent)
+
+    def fake_run_connector_fetch(_session, connector_name, fetch_fn, date_fields=None):
+        if connector_name == "search_web":
+            return [
+                SearchDiscoveryResult(
+                    query_text='site:job-boards.greenhouse.io "operations lead"',
+                    title="Operations Lead - Acme",
+                    url="https://job-boards.greenhouse.io/acme/jobs/1",
+                    query_family="ats_direct",
+                )
+            ], True, None
+        return [], False, None
+
+    monkeypatch.setattr(sync_service, "run_connector_fetch", fake_run_connector_fetch)
+    monkeypatch.setattr(sync_service, "get_settings", lambda: Settings(search_discovery_enabled=True))
+
+    result = sync_service.sync_all(session, enabled_connectors={"search_web"})
+
+    query_family_metrics = result.discovery_status["cycle_metrics"]["query_family_metrics"]
+    assert query_family_metrics["ats_direct"]["queries_attempted"] == 1
+    assert query_family_metrics["ats_direct"]["accepted_results"] == 1
+    assert query_family_metrics["ats_direct"]["candidate_conversions"] == 1
+    assert query_family_metrics["ats_direct"]["selected_for_expansion"] == 1
+
+    metrics_run = (
+        session.query(AgentRun)
+        .filter(AgentRun.agent_name == "Discovery", AgentRun.action == "recorded discovery cycle metrics")
+        .order_by(AgentRun.id.desc())
+        .first()
+    )
+    assert metrics_run is not None
+    assert metrics_run.metadata_json["cycle_metrics"]["query_family_metrics"]["ats_direct"]["selected_for_expansion"] == 1
 
 
 def test_default_leads_query_returns_timestamp_precision_and_recently_seen_rows_only() -> None:

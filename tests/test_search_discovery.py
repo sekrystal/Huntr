@@ -7,6 +7,7 @@ from connectors.search_web import (
     _parse_search_results_from_html,
     _surface_acceptance_reason,
     build_search_queries,
+    classify_query_family,
     derive_search_results_from_extraction,
     extract_ats_identifiers_from_html,
 )
@@ -112,3 +113,10 @@ def test_build_search_queries_prefers_careers_mix_over_ats_direct_only() -> None
     assert any('"Acme" "chief of staff" careers' in query for query in queries)
     ats_direct_count = sum(1 for query in queries if query.startswith("site:job-boards.greenhouse.io") or query.startswith("site:jobs.ashbyhq.com"))
     assert ats_direct_count < len(queries)
+
+
+def test_classify_query_family_captures_existing_query_mix() -> None:
+    assert classify_query_family('site:job-boards.greenhouse.io "chief of staff"') == "ats_direct"
+    assert classify_query_family('"Acme" "chief of staff" careers') == "company_targeted"
+    assert classify_query_family('"chief of staff" company careers') == "careers_broad"
+    assert classify_query_family('"ai" startup jobs "chief of staff"') == "role_market"

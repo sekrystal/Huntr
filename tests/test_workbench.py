@@ -122,3 +122,17 @@ def test_fetch_json_returns_empty_leads_payload_on_request_failure(monkeypatch) 
     assert payload == {"items": []}
     assert captured
     assert captured_timeout == [10]
+
+
+def test_discovery_query_family_frame_flattens_metrics_for_ui() -> None:
+    frame = ui_app.discovery_query_family_frame(
+        {
+            "query_family_metrics": {
+                "ats_direct": {"queries_attempted": 2, "accepted_results": 1},
+                "careers_broad": {"queries_attempted": 3, "selected_for_expansion": 1},
+            }
+        }
+    )
+
+    assert frame["query_family"].tolist() == ["ats_direct", "careers_broad"]
+    assert frame.loc[frame["query_family"] == "ats_direct", "accepted_results"].iloc[0] == 1
