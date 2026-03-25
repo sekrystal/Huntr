@@ -1046,11 +1046,15 @@ def sync_all(
         cycle_metrics["accepted_results_count"] = len(search_results)
         cycle_metrics["convertible_candidate_count"] = convertible_candidate_count
         cycle_metrics["candidate_conversion_success_count"] = convertible_candidate_count
+        cycle_metrics["candidate_count"] = len(candidate_rows)
         cycle_metrics["dropped_result_count"] = max(len(search_results) - convertible_candidate_count, 0)
         cycle_metrics["candidate_conversion_drop_count"] = max(len(search_results) - convertible_candidate_count, 0)
         cycle_metrics["accepted_urls_sample"] = [result.url for result in search_results[:10]]
         cycle_metrics["dropped_urls_sample"] = [item["url"] for item in dropped_results[:10]]
         selected_discoveries = select_candidates_for_expansion(candidate_rows, settings=settings)
+        cycle_metrics["selected_expansion_count"] = len(selected_discoveries)
+        cycle_metrics["empty_expansion_count"] += 0
+        cycle_metrics["listings_yielded_count"] += 0
         for candidate, _, _, _ in selected_discoveries:
             _bump_query_family_metric(query_family_metrics, candidate.query_family, "selected_for_expansion")
             _bump_query_family_metric(query_family_metrics, candidate.query_family, f"{candidate.board_type}_selected")
@@ -1218,6 +1222,7 @@ def sync_all(
         )
     greenhouse_job_counts = dict(getattr(greenhouse_connector, "last_board_counts", {}) or {})
     ashby_job_counts = Counter(job.get("source_org_key") for job in ashby_jobs if job.get("source_org_key"))
+    ashby_org_statuses = dict(getattr(ashby_connector, "last_org_statuses", {}) or {})
     configured_greenhouse_tokens = {token.lower() for token in settings.greenhouse_tokens}
     configured_ashby_orgs = {org.lower() for org in settings.ashby_orgs}
     for job in greenhouse_jobs:
@@ -1246,11 +1251,33 @@ def sync_all(
         )
         blocked_reason = "investigate" if candidate.board_type == "careers_page" else None
         record_expansion_attempt(row, result_count=result_count, blocked_reason=blocked_reason)
+        expansion_diagnostics = {
+            "stage": "expansion_outcome",
+            "selected": True,
+            "selected_score": score,
+            "selected_reasons": reasons,
+            "result_count": result_count,
+            "status": row.expansion_status,
+            "blocked_reason": blocked_reason,
+            "empty_surface": result_count == 0,
+            "yielded_listings": result_count,
+            "failure_boundary": "connector_yield" if result_count == 0 else None,
+        }
+        if candidate.board_type == "ashby":
+            ashby_status = ashby_org_statuses.get(candidate.board_locator.lower())
+            expansion_diagnostics["surface_status"] = ashby_status or "unknown"
+            if ashby_status == "invalid_identifier":
+                expansion_diagnostics["failure_boundary"] = "invalid_discovered_surface"
+            elif ashby_status == "valid_identifier_empty_jobs":
+                expansion_diagnostics["failure_boundary"] = "empty_discovered_surface"
+        elif candidate.board_type == "greenhouse":
+            expansion_diagnostics["surface_status"] = "jobs_returned" if result_count > 0 else "empty_jobs"
         row.metadata_json = {
             **(row.metadata_json or {}),
             "selected_score": score,
             "selected_reasons": reasons,
             "selected_this_cycle_at": datetime.utcnow().isoformat(),
+            "expansion_diagnostics": expansion_diagnostics,
         }
         provenance = (row.metadata_json or {}).get("surface_provenance")
         logger.info(
@@ -1283,10 +1310,12 @@ def sync_all(
         if result_count > 0:
             cycle_metrics[f"{candidate.board_type}_expansion_successes"] += 1
             cycle_metrics[f"{candidate.board_type}_listings_yielded"] += result_count
+            cycle_metrics["listings_yielded_count"] += result_count
             _bump_query_family_metric(query_family_metrics, candidate.query_family, "expansions_with_listings")
             _bump_query_family_metric(query_family_metrics, candidate.query_family, "listings_yielded", result_count)
         else:
             cycle_metrics[f"{candidate.board_type}_empty_expansions"] += 1
+            cycle_metrics["empty_expansion_count"] += 1
             _bump_query_family_metric(query_family_metrics, candidate.query_family, "empty_expansions")
         if provenance in {"discovered_existing", "discovered_new"} and result_count > 0:
             cycle_metrics[f"agent_discovered_{candidate.board_type}_expansion_successes"] += 1

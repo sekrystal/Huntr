@@ -48,6 +48,9 @@ class AshbyConnector:
     def __init__(self) -> None:
         self.settings = get_settings()
         self.last_error: str | None = None
+        self.last_org_statuses: dict[str, str] = {}
+        self.last_per_org_counts: dict[str, int] = {}
+        self.last_empty_orgs: list[str] = []
 
     def fetch(
         self,
@@ -113,6 +116,9 @@ class AshbyConnector:
                 job["companyName"] = normalized_org.replace("-", " ").title()
                 job["source_org_key"] = normalized_org
                 jobs.append(job)
+        self.last_org_statuses = dict(org_statuses)
+        self.last_per_org_counts = dict(per_org_counts)
+        self.last_empty_orgs = list(empty_orgs)
         logger.info(
             "[ASHBY_FETCH_RESULTS] %s",
             {"per_org_counts": per_org_counts, "empty_orgs": empty_orgs[:10], "org_statuses": org_statuses},
