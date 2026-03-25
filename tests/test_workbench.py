@@ -57,6 +57,53 @@ def test_filter_and_sort_table_filters_by_search_and_status() -> None:
     assert filtered["company"].tolist() == ["Mercor"]
 
 
+def test_filter_and_sort_table_supports_richer_tracker_statuses() -> None:
+    table = pd.DataFrame(
+        [
+            {
+                "company": "Mercor",
+                "title": "Deployment Strategist",
+                "lead_type": "combined",
+                "freshness": "fresh",
+                "fit": "strong fit",
+                "confidence": "high",
+                "current_status": "recruiter screen",
+                "surfaced_at_raw": pd.Timestamp("2026-03-18T10:00:00Z"),
+                "posted_at_raw": pd.Timestamp("2026-03-17T10:00:00Z"),
+            },
+            {
+                "company": "Linear",
+                "title": "Strategic Operations Lead",
+                "lead_type": "listing",
+                "freshness": "fresh",
+                "fit": "strong fit",
+                "confidence": "high",
+                "current_status": "saved",
+                "surfaced_at_raw": pd.Timestamp("2026-03-18T09:00:00Z"),
+                "posted_at_raw": pd.Timestamp("2026-03-16T10:00:00Z"),
+            },
+        ]
+    )
+
+    filtered = filter_and_sort_table(
+        table,
+        {
+            "search": "",
+            "lead_type": "all",
+            "freshness": "all",
+            "fit": "all",
+            "status": "recruiter screen",
+            "surfaced_since": None,
+            "surfaced_until": None,
+            "posted_since": None,
+            "posted_until": None,
+            "sort_mode": "Company A-Z",
+        },
+    )
+
+    assert filtered["company"].tolist() == ["Mercor"]
+
+
 def test_filter_and_sort_table_sorts_by_freshness_and_date() -> None:
     table = pd.DataFrame(
         [

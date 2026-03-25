@@ -489,8 +489,20 @@ class FeedbackRequest(BaseModel):
 class ApplicationStatusUpdate(BaseModel):
     lead_id: int
     current_status: str
+    status_reason_code: Optional[str] = None
+    outcome_code: Optional[str] = None
+    outcome_reason_code: Optional[str] = None
     notes: Optional[str] = None
     date_applied: Optional[datetime] = None
+
+    @model_validator(mode="after")
+    def normalize_tracker_fields(self) -> "ApplicationStatusUpdate":
+        self.current_status = self.current_status.strip()
+        self.status_reason_code = (self.status_reason_code or "").strip() or None
+        self.outcome_code = (self.outcome_code or "").strip() or None
+        self.outcome_reason_code = (self.outcome_reason_code or "").strip() or None
+        self.notes = (self.notes or "").strip() or None
+        return self
 
 
 class LeadResponse(BaseModel):
@@ -521,6 +533,9 @@ class LeadResponse(BaseModel):
     saved: bool = False
     applied: bool = False
     current_status: Optional[str] = None
+    status_reason_code: Optional[str] = None
+    outcome_code: Optional[str] = None
+    outcome_reason_code: Optional[str] = None
     date_saved: Optional[datetime] = None
     date_applied: Optional[datetime] = None
     application_notes: Optional[str] = None
