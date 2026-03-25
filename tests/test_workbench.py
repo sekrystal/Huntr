@@ -151,6 +151,55 @@ def test_filter_and_sort_table_sorts_by_freshness_and_date() -> None:
     assert filtered["company"].tolist() == ["FreshCo", "RecentCo"]
 
 
+def test_filter_and_sort_table_sorts_by_highest_recommendation_first() -> None:
+    table = pd.DataFrame(
+        [
+            {
+                "company": "LowerRanked",
+                "title": "Ops Lead",
+                "lead_type": "listing",
+                "freshness": "fresh",
+                "fit": "strong fit",
+                "confidence": "high",
+                "recommendation_score": 6.1,
+                "current_status": "",
+                "surfaced_at_raw": pd.Timestamp("2026-03-18T09:00:00Z"),
+                "posted_at_raw": pd.Timestamp("2026-03-17T10:00:00Z"),
+            },
+            {
+                "company": "HigherRanked",
+                "title": "Chief of Staff",
+                "lead_type": "listing",
+                "freshness": "recent",
+                "fit": "stretch",
+                "confidence": "medium",
+                "recommendation_score": 8.4,
+                "current_status": "",
+                "surfaced_at_raw": pd.Timestamp("2026-03-18T08:00:00Z"),
+                "posted_at_raw": pd.Timestamp("2026-03-16T10:00:00Z"),
+            },
+        ]
+    )
+
+    filtered = filter_and_sort_table(
+        table,
+        {
+            "search": "",
+            "lead_type": "all",
+            "freshness": "all",
+            "fit": "all",
+            "status": "all",
+            "surfaced_since": None,
+            "surfaced_until": None,
+            "posted_since": None,
+            "posted_until": None,
+            "sort_mode": "Highest recommendation first",
+        },
+    )
+
+    assert filtered["company"].tolist() == ["HigherRanked", "LowerRanked"]
+
+
 def test_lead_frame_includes_recommendation_action_label() -> None:
     frame = ui_app.lead_frame(
         [
@@ -179,12 +228,18 @@ def test_lead_frame_includes_recommendation_action_label() -> None:
                 "application_notes": "",
                 "next_action": None,
                 "follow_up_due": False,
-                "score_breakdown_json": {"action_label": "Act now"},
+                "score_breakdown_json": {
+                    "final_score": 8.4,
+                    "action_label": "Act now",
+                    "explanation": {"headline": "Strong recommendation at 8.40 with high confidence."},
+                },
             }
         ]
     )
 
     assert frame["recommendation_action"].tolist() == ["Act now"]
+    assert frame["recommendation_score"].tolist() == [8.4]
+    assert frame["match_summary"].tolist() == ["Strong recommendation at 8.40 with high confidence."]
 
 
 def test_recommendation_action_summary_uses_action_label_and_explanation() -> None:
@@ -198,6 +253,21 @@ def test_recommendation_action_summary_uses_action_label_and_explanation() -> No
     )
 
     assert summary == "Seek referral: Seek referral because the source signal is still weak."
+
+
+def test_recommendation_table_explanation_prefers_structured_score_headline() -> None:
+    summary = ui_app.recommendation_table_explanation(
+        {
+            "explanation": "Fallback explanation",
+            "score_breakdown_json": {
+                "action_label": "Act now",
+                "action_explanation": "Move fast.",
+                "explanation": {"headline": "Strong recommendation at 8.40 with high confidence."},
+            },
+        }
+    )
+
+    assert summary == "Strong recommendation at 8.40 with high confidence."
 
 
 def test_referral_strategy_summary_uses_saved_network_matches() -> None:

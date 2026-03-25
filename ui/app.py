@@ -45,6 +45,7 @@ APPLICATION_STATUSES = [
 ]
 
 SORT_OPTIONS = [
+    "Highest recommendation first",
     "Newest surfaced",
     "Newest posted",
     "Company A-Z",
@@ -433,6 +434,7 @@ def lead_frame(leads: list[dict[str, Any]]) -> pd.DataFrame:
     rows: list[dict[str, Any]] = []
     for lead in leads:
         score_payload = lead.get("score_breakdown_json") or {}
+        recommendation_score = score_payload.get("final_score", score_payload.get("composite"))
         rows.append(
             {
                 "lead_id": lead["id"],
@@ -448,7 +450,9 @@ def lead_frame(leads: list[dict[str, Any]]) -> pd.DataFrame:
                 "freshness": lead["freshness_label"],
                 "fit": lead["qualification_fit_label"],
                 "confidence": lead["confidence_label"],
+                "recommendation_score": float(recommendation_score) if recommendation_score is not None else None,
                 "recommendation_action": score_payload.get("action_label") or "",
+                "match_summary": recommendation_table_explanation(lead),
                 "current_status": lead.get("current_status") or "",
                 "source": lead.get("source_platform") or lead.get("source_type") or "",
                 "provenance": lead.get("source_lineage") or lead.get("source_platform") or lead.get("source_type") or "",
@@ -506,6 +510,17 @@ def recommendation_action_summary(lead: dict[str, Any]) -> str:
     return f"{action_label}: {action_explanation}"
 
 
+def recommendation_table_explanation(lead: dict[str, Any]) -> str:
+    score_payload = lead.get("score_breakdown_json") or {}
+    score_explanation = score_payload.get("explanation") or {}
+    return (
+        score_explanation.get("headline")
+        or score_explanation.get("summary")
+        or lead.get("explanation")
+        or recommendation_action_summary(lead)
+    )
+
+
 def rejection_feedback_summary(lead: dict[str, Any]) -> str:
     feedback = categorize_rejection_feedback(
         status_reason_code=lead.get("status_reason_code"),
@@ -547,7 +562,13 @@ def filter_and_sort_table(table: pd.DataFrame, filters: dict[str, Any]) -> pd.Da
         filtered = filtered.loc[filtered["posted_at_raw"].notna() & filtered["posted_at_raw"].dt.date.le(filters["posted_until"])]
 
     sort_mode = filters["sort_mode"]
-    if sort_mode == "Newest surfaced":
+    if sort_mode == "Highest recommendation first":
+        filtered = filtered.sort_values(
+            by=["recommendation_score", "surfaced_at_raw", "company"],
+            ascending=[False, False, True],
+            na_position="last",
+        )
+    elif sort_mode == "Newest surfaced":
         filtered = filtered.sort_values(by=["surfaced_at_raw", "company"], ascending=[False, True], na_position="last")
     elif sort_mode == "Newest posted":
         filtered = filtered.sort_values(by=["posted_at_raw", "surfaced_at_raw"], ascending=[False, False], na_position="last")
@@ -571,16 +592,17 @@ def filter_and_sort_table(table: pd.DataFrame, filters: dict[str, Any]) -> pd.Da
 
 
 def apply_table_controls(table: pd.DataFrame, key: str) -> pd.DataFrame:
-    st.caption("Search, filter, and sort the workbench. Every control below is wired to the live table state.")
+    st.caption("Search, filter, and sort the ranked opportunities table.")
     row1 = st.columns(6)
     row2 = st.columns(4)
+    default_sort_index = SORT_OPTIONS.index("Highest recommendation first") if key == "leads" else SORT_OPTIONS.index("Newest surfaced")
     filters = {
         "search": row1[0].text_input("Search title or company", key=f"search-{key}"),
         "lead_type": row1[1].selectbox("Lead type", ["all", "combined", "listing", "signal"], key=f"type-{key}"),
         "freshness": row1[2].selectbox("Freshness", ["all", "fresh", "recent", "stale", "unknown"], key=f"fresh-{key}"),
         "fit": row1[3].selectbox("Fit", ["all", "strong fit", "stretch", "unclear", "overqualified", "underqualified"], key=f"fit-{key}"),
         "status": row1[4].selectbox("Status", ["all", *APPLICATION_STATUSES], key=f"status-{key}"),
-        "sort_mode": row1[5].selectbox("Sort", SORT_OPTIONS, key=f"sort-{key}"),
+        "sort_mode": row1[5].selectbox("Sort", SORT_OPTIONS, index=default_sort_index, key=f"sort-{key}"),
         "surfaced_since": row2[0].date_input("Surfaced since", value=None, key=f"surfaced-since-{key}"),
         "surfaced_until": row2[1].date_input("Surfaced until", value=None, key=f"surfaced-until-{key}"),
         "posted_since": row2[2].date_input("Posted since", value=None, key=f"posted-since-{key}"),
@@ -602,11 +624,13 @@ def render_table(leads: list[dict[str, Any]], key: str, applied_view: bool = Fal
 
     columns = [
         "open_url",
+        "recommendation_score",
+        "recommendation_action",
+        "match_summary",
         "surfaced_at",
         "posted_at",
         "company",
         "title",
-        "recommendation_action",
         "provenance",
         "lead_type",
         "freshness",
@@ -630,9 +654,11 @@ def render_table(leads: list[dict[str, Any]], key: str, applied_view: bool = Fal
         selection_mode="single-row",
         column_config={
             "open_url": st.column_config.LinkColumn("Open", display_text="open", validate="^https?://"),
+            "recommendation_score": st.column_config.NumberColumn("Score", format="%.2f"),
             "surfaced_at": "Surfaced",
             "posted_at": "Posted",
             "recommendation_action": "Recommendation",
+            "match_summary": "Why it surfaced",
             "lead_type": "Type",
             "provenance": "Provenance",
             "freshness": "Freshness",
@@ -667,7 +693,12 @@ def render_detail(lead: dict[str, Any], key: str, profile: dict[str, Any]) -> No
 
     st.divider()
     st.subheader(f"{lead['company_name']} — {lead['primary_title']}")
-    st.write(lead.get("explanation") or "No explanation recorded.")
+    st.write(recommendation_table_explanation(lead))
+    top_summary = st.columns(3)
+    score_value = score_payload.get("final_score", score_payload.get("composite"))
+    top_summary[0].metric("Recommendation", score_payload.get("action_label") or "No action")
+    top_summary[1].metric("Score", f"{float(score_value):.2f}" if score_value is not None else "n/a")
+    top_summary[2].metric("Confidence", score_payload.get("confidence_label") or lead.get("confidence_label") or "unknown")
     st.caption(recommendation_score_summary(lead))
     st.info(recommendation_action_summary(lead))
     st.caption(referral_strategy_summary(lead, profile))
@@ -1455,7 +1486,7 @@ def render_autonomy_ops_tab() -> None:
 def main() -> None:
     st.set_page_config(page_title="Opportunity Scout", layout="wide")
     st.title("Opportunity Scout")
-    st.caption("A functional workbench for refreshing, evaluating, and tracking startup leads.")
+    st.caption("Ranked startup opportunities first, with the clearest reasons to pursue each one up front.")
 
     try:
         profile = fetch_json("/candidate-profile")
@@ -1481,6 +1512,8 @@ def main() -> None:
     )
 
     with tabs[0]:
+        st.subheader("Top opportunities")
+        st.caption("Start here. Review the highest-ranked jobs first, then open a row to see the recommendation rationale, evidence, and next action.")
         render_user_job_link_form()
         leads = fetch_json(base_query)["items"]
         selected = render_table(leads, key="leads")
