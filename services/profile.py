@@ -40,6 +40,7 @@ SENIORITY_KEYWORDS = {
     "vp": "executive",
 }
 PROFILE_SCHEMA_KEY = "structured_profile"
+NETWORK_IMPORT_KEY = "network_import"
 PROFILE_MODEL_FIELDS = {
     column.name
     for column in CandidateProfile.__table__.columns
@@ -234,6 +235,18 @@ def build_learning_summary(profile: CandidateProfile) -> LearningSummary:
         penalized_sources=penalized_sources,
         generated_queries=generated_queries,
     )
+
+
+def extract_network_import(extracted_summary_json: Optional[dict]) -> dict:
+    summary = extracted_summary_json or {}
+    network_payload = summary.get(NETWORK_IMPORT_KEY)
+    return network_payload if isinstance(network_payload, dict) else {}
+
+
+def attach_network_import(extracted_summary_json: Optional[dict], network_payload: dict) -> dict:
+    merged = dict(extracted_summary_json or {})
+    merged[NETWORK_IMPORT_KEY] = network_payload
+    return merged
 
 
 def _with_structured_profile(payload: CandidateProfilePayload) -> CandidateProfilePayload:

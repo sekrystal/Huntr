@@ -6,7 +6,16 @@ from sqlalchemy.orm import sessionmaker
 from core.models import Base
 from core.schemas import CandidateProfilePayload, StructuredCandidateProfile
 from services.document_ingest import preview_resume_text, preview_resume_upload
-from services.profile import extract_text_from_resume_upload, get_candidate_profile, ingest_resume, profile_to_payload, update_candidate_profile
+from services.network_import import match_referral_paths, parse_network_csv
+from services.profile import (
+    attach_network_import,
+    extract_network_import,
+    extract_text_from_resume_upload,
+    get_candidate_profile,
+    ingest_resume,
+    profile_to_payload,
+    update_candidate_profile,
+)
 
 
 def test_resume_ingestion_populates_candidate_profile() -> None:
@@ -166,3 +175,44 @@ def test_resume_preview_marks_partial_extraction_without_failing() -> None:
     assert preview["candidate_profile"]["extracted_summary_json"]["missing_fields"] == preview["missing_fields"]
     assert preview["candidate_profile"]["structured_profile_json"]["targeting"]["preferred_titles"]
     assert preview["warnings"]
+
+
+def test_network_import_parses_csv_and_matches_company_referral_paths() -> None:
+    network_payload = parse_network_csv(
+        "linkedin.csv",
+        (
+            "full_name,current_company,title,relationship,linkedin_url,notes\n"
+            "Alex Rivera,Linear,Product Operations,former teammate,https://linkedin.com/in/alex,Worked together on launch ops\n"
+            "Casey Stone,Figma,Chief of Staff,warm intro,https://linkedin.com/in/casey,\n"
+        ),
+    )
+
+    matches = match_referral_paths("Linear", network_payload)
+
+    assert network_payload["import_summary"]["contact_count"] == 2
+    assert matches == [
+        {
+            "contact_name": "Alex Rivera",
+            "company": "Linear",
+            "title": "Product Operations",
+            "relationship": "former teammate",
+            "profile_url": "https://linkedin.com/in/alex",
+            "notes": "Worked together on launch ops",
+            "location": "",
+            "match_type": "direct_company",
+            "adjacency_label": "Direct company contact",
+            "path_summary": "Alex Rivera at Linear (former teammate)",
+        }
+    ]
+
+
+def test_network_import_round_trips_through_profile_summary() -> None:
+    network_payload = parse_network_csv(
+        "network.csv",
+        "name,company,title,relationship\nJamie Lee,Mercor,Ops Lead,former teammate\n",
+    )
+
+    merged = attach_network_import({"summary": "Existing profile"}, network_payload)
+
+    assert extract_network_import(merged)["source_filename"] == "network.csv"
+    assert extract_network_import(merged)["contacts"][0]["company"] == "Mercor"

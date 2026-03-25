@@ -24,6 +24,8 @@ from services.feedback_learning import (
     generate_improvement_recommendations,
     reason_label,
 )
+from services.network_import import match_referral_paths, parse_network_csv
+from services.profile import attach_network_import, extract_network_import
 from services.profile_ingest import build_profile_review_rows
 from services.pipeline import ingest_user_job_link
 
@@ -199,6 +201,48 @@ def build_profile_update_payload(
         "stretch_role_families_json": parse_csv(form_values["stretch_role_families"]),
         "minimum_fit_threshold": form_values["minimum_fit_threshold"],
     }
+
+
+def build_profile_persistence_payload(
+    profile: dict[str, Any],
+    *,
+    extracted_summary_json: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    return {
+        "profile_schema_version": profile.get("profile_schema_version", "v1"),
+        "name": profile.get("name", "Demo Candidate"),
+        "raw_resume_text": profile.get("raw_resume_text", ""),
+        "extracted_summary_json": extracted_summary_json if extracted_summary_json is not None else profile.get("extracted_summary_json", {}),
+        "preferred_titles_json": profile.get("preferred_titles_json", []),
+        "adjacent_titles_json": profile.get("adjacent_titles_json", []),
+        "excluded_titles_json": profile.get("excluded_titles_json", []),
+        "preferred_domains_json": profile.get("preferred_domains_json", []),
+        "excluded_companies_json": profile.get("excluded_companies_json", []),
+        "preferred_locations_json": profile.get("preferred_locations_json", []),
+        "confirmed_skills_json": profile.get("confirmed_skills_json", []),
+        "competencies_json": profile.get("competencies_json", []),
+        "explicit_preferences_json": profile.get("explicit_preferences_json", []),
+        "seniority_guess": profile.get("seniority_guess"),
+        "stage_preferences_json": profile.get("stage_preferences_json", []),
+        "core_titles_json": profile.get("core_titles_json", []),
+        "excluded_keywords_json": profile.get("excluded_keywords_json", []),
+        "min_seniority_band": profile.get("min_seniority_band", "mid"),
+        "max_seniority_band": profile.get("max_seniority_band", "senior"),
+        "stretch_role_families_json": profile.get("stretch_role_families_json", []),
+        "minimum_fit_threshold": profile.get("minimum_fit_threshold", 2.8),
+    }
+
+
+def referral_matches_for_lead(lead: dict[str, Any], profile: dict[str, Any], limit: int = 3) -> list[dict[str, Any]]:
+    network_payload = extract_network_import(profile.get("extracted_summary_json"))
+    return match_referral_paths(lead.get("company_name") or "", network_payload, limit=limit)
+
+
+def referral_strategy_summary(lead: dict[str, Any], profile: dict[str, Any]) -> str:
+    matches = referral_matches_for_lead(lead, profile)
+    if not matches:
+        return "No saved referral paths for this company."
+    return "Possible referral paths: " + "; ".join(match["path_summary"] for match in matches)
 
 
 def render_onboarding_progress(state: dict[str, Any]) -> None:
@@ -576,7 +620,7 @@ def render_table(leads: list[dict[str, Any]], key: str, applied_view: bool = Fal
     return next(item for item in leads if item["id"] == lead_id)
 
 
-def render_detail(lead: dict[str, Any], key: str) -> None:
+def render_detail(lead: dict[str, Any], key: str, profile: dict[str, Any]) -> None:
     evidence = lead.get("evidence_json", {})
     score_payload = lead.get("score_breakdown_json") or {}
     score_explanation = score_payload.get("explanation") or {}
@@ -592,6 +636,7 @@ def render_detail(lead: dict[str, Any], key: str) -> None:
     st.write(lead.get("explanation") or "No explanation recorded.")
     st.caption(recommendation_score_summary(lead))
     st.info(recommendation_action_summary(lead))
+    st.caption(referral_strategy_summary(lead, profile))
 
     summary = st.columns(6)
     summary[0].write(f"Type: `{lead['lead_type']}`")
@@ -648,6 +693,16 @@ def render_detail(lead: dict[str, Any], key: str) -> None:
         if score_payload.get("action_label") or score_payload.get("action_explanation"):
             st.write("Recommended action: " + (score_payload.get("action_label") or "none"))
             st.caption(score_payload.get("action_explanation") or "No action explanation recorded.")
+        referral_matches = referral_matches_for_lead(lead, profile)
+        if referral_matches:
+            st.write("Referral paths:")
+            st.dataframe(
+                pd.DataFrame(referral_matches)[["contact_name", "company", "title", "relationship", "adjacency_label", "profile_url", "notes"]],
+                use_container_width=True,
+                hide_index=True,
+                column_config={"profile_url": st.column_config.LinkColumn("Profile", display_text="open", validate="^https?://")},
+            )
+            st.caption("Local referral suggestions only. No outreach copy or automation is generated.")
         score_rows = recommendation_score_rows(lead)
         if not score_rows.empty:
             st.dataframe(score_rows, use_container_width=True, hide_index=True)
@@ -954,6 +1009,43 @@ def render_profile_tab(profile: dict[str, Any], learning: dict[str, Any]) -> Non
         st.caption(
             "Continue in the Leads tab for ranked matches or the Discovery tab to inspect recall expansion from this saved profile."
         )
+
+    st.markdown("#### Local network import")
+    st.caption("Import LinkedIn export or network CSV locally to suggest referral paths. JORB does not generate outreach.")
+    network_upload = st.file_uploader("Upload network CSV", type=["csv"], key="network-import-upload")
+    pasted_network_csv = st.text_area("Or paste network CSV", height=120, key="network-import-text")
+    if st.button("Import network data", use_container_width=True):
+        try:
+            if network_upload is not None:
+                imported_network = parse_network_csv(network_upload.name, network_upload.getvalue().decode("utf-8", errors="ignore"))
+            elif pasted_network_csv.strip():
+                imported_network = parse_network_csv("pasted_network.csv", pasted_network_csv.strip())
+            else:
+                st.warning("Upload a CSV or paste CSV text first.")
+                return
+            extracted_summary = attach_network_import(profile.get("extracted_summary_json"), imported_network)
+            fetch_json("/candidate-profile", method="POST", payload=build_profile_persistence_payload(profile, extracted_summary_json=extracted_summary))
+            st.session_state["latest_network_import"] = imported_network
+            st.rerun()
+        except Exception as exc:
+            st.error(f"Network import failed: {exc}")
+
+    network_payload = extract_network_import(profile.get("extracted_summary_json"))
+    if network_payload.get("contacts"):
+        import_summary = network_payload.get("import_summary") or {}
+        cols = st.columns(2)
+        cols[0].metric("Imported contacts", import_summary.get("contact_count", 0))
+        cols[1].metric("Indexed companies", import_summary.get("indexed_company_count", 0))
+        st.caption(network_payload.get("guidance") or "Local referral suggestions only.")
+        contacts_df = pd.DataFrame(network_payload["contacts"])
+        if not contacts_df.empty:
+            visible_columns = [column for column in ["name", "company", "title", "relationship", "location", "profile_url", "notes"] if column in contacts_df.columns]
+            st.dataframe(
+                contacts_df[visible_columns],
+                use_container_width=True,
+                hide_index=True,
+                column_config={"profile_url": st.column_config.LinkColumn("Profile", display_text="open", validate="^https?://")},
+            )
 
     st.caption(f"Profile schema: {profile.get('profile_schema_version', 'v1')}")
     st.caption(profile.get("extracted_summary_json", {}).get("summary", "No profile summary yet."))
@@ -1339,7 +1431,7 @@ def main() -> None:
         leads = fetch_json(base_query)["items"]
         selected = render_table(leads, key="leads")
         if selected:
-            render_detail(selected, "leads")
+            render_detail(selected, "leads", profile)
 
     with tabs[1]:
         saved = fetch_json(
@@ -1353,7 +1445,7 @@ def main() -> None:
         )["items"]
         selected = render_table(saved, key="saved")
         if selected:
-            render_detail(selected, "saved")
+            render_detail(selected, "saved", profile)
 
     with tabs[2]:
         applied = fetch_json(
@@ -1367,7 +1459,7 @@ def main() -> None:
         )["items"]
         selected = render_table(applied, key="applied", applied_view=True)
         if selected:
-            render_detail(selected, "applied")
+            render_detail(selected, "applied", profile)
 
     with tabs[3]:
         render_profile_tab(profile, learning)

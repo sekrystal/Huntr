@@ -200,6 +200,32 @@ def test_recommendation_action_summary_uses_action_label_and_explanation() -> No
     assert summary == "Seek referral: Seek referral because the source signal is still weak."
 
 
+def test_referral_strategy_summary_uses_saved_network_matches() -> None:
+    summary = ui_app.referral_strategy_summary(
+        {"company_name": "Linear"},
+        {
+            "extracted_summary_json": {
+                "network_import": {
+                    "contacts": [
+                        {
+                            "name": "Alex Rivera",
+                            "company": "Linear",
+                            "company_keys": ["linear"],
+                            "title": "Product Operations",
+                            "relationship": "former teammate",
+                            "profile_url": "https://linkedin.com/in/alex",
+                            "notes": "Worked together on launch ops",
+                            "location": "",
+                        }
+                    ]
+                }
+            }
+        },
+    )
+
+    assert summary == "Possible referral paths: Alex Rivera at Linear (former teammate)"
+
+
 def test_update_application_status_includes_structured_rejection_feedback(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
