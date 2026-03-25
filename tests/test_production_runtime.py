@@ -23,6 +23,7 @@ def test_runtime_connector_set_respects_greenhouse_kill_switch() -> None:
         demo_mode=False,
         autonomy_enabled=True,
         greenhouse_enabled=False,
+        search_discovery_enabled=False,
         database_url="sqlite:///:memory:",
     )
     source_mode, enabled, strict = get_runtime_connector_set(settings)
@@ -51,6 +52,7 @@ def test_runtime_connector_set_enables_ashby_when_orgs_are_configured() -> None:
         autonomy_enabled=True,
         greenhouse_enabled=False,
         ashby_org_keys="mercor,vercel",
+        search_discovery_enabled=False,
         database_url="sqlite:///:memory:",
     )
     source_mode, enabled, strict = get_runtime_connector_set(settings)

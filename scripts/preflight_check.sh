@@ -5,7 +5,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-if [ -x "$ROOT/.venv_validation/bin/python" ]; then
+if [ -n "${VIRTUAL_ENV:-}" ] && [ -x "${VIRTUAL_ENV}/bin/python" ]; then
+  PYTHON_BIN="${VIRTUAL_ENV}/bin/python"
+elif [ -x "$ROOT/.venv_validation/bin/python" ]; then
   PYTHON_BIN="$ROOT/.venv_validation/bin/python"
 elif [ -x "$ROOT/.venv/bin/python" ]; then
   PYTHON_BIN="$ROOT/.venv/bin/python"
