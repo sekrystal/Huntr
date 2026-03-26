@@ -482,10 +482,38 @@ class ProfileScoringPreferences(BaseModel):
     minimum_fit_threshold: float = 2.8
 
 
+class SearchIntent(BaseModel):
+    target_roles: list[str] = Field(default_factory=list)
+    preferred_locations: list[str] = Field(default_factory=list)
+    work_mode_preference: str = "unspecified"
+    seniority_guess: Optional[str] = None
+    min_seniority_band: str = "mid"
+    max_seniority_band: str = "senior"
+    applied_constraints: list[str] = Field(default_factory=list)
+    defaulted_constraints: list[str] = Field(default_factory=list)
+    explicit_target_roles: list[str] = Field(default_factory=list)
+    explicit_preferred_locations: list[str] = Field(default_factory=list)
+    explicit_work_mode: bool = False
+
+
 class StructuredCandidateProfile(BaseModel):
     version: str = "v1"
     targeting: ProfileTargetingPreferences = Field(default_factory=ProfileTargetingPreferences)
     scoring: ProfileScoringPreferences = Field(default_factory=ProfileScoringPreferences)
+    search_intent: Optional[SearchIntent] = None
+
+    @model_validator(mode="after")
+    def ensure_search_intent(self) -> "StructuredCandidateProfile":
+        if self.search_intent is None:
+            self.search_intent = SearchIntent(
+                target_roles=list(self.targeting.target_roles),
+                preferred_locations=list(self.targeting.preferred_locations),
+                work_mode_preference=self.targeting.work_mode_preference,
+                seniority_guess=self.targeting.seniority.guess,
+                min_seniority_band=self.targeting.seniority.minimum_band,
+                max_seniority_band=self.targeting.seniority.maximum_band,
+            )
+        return self
 
 
 class ResumeUploadRequest(BaseModel):

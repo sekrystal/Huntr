@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from core.models import CandidateProfile, ResumeDocument
-from core.schemas import CandidateProfilePayload, LearningSummary, ResumeUploadResponse
+from core.schemas import CandidateProfilePayload, LearningSummary, ResumeUploadResponse, SearchIntent
 
 
 KNOWN_TITLES = [
@@ -173,12 +173,13 @@ def _infer_work_mode_preference(preferred_locations: list[str], context_text: st
     return "unspecified"
 
 
-def profile_search_constraints(profile: CandidateProfile | dict[str, Any]) -> dict[str, Any]:
+def build_search_intent(profile: CandidateProfile | dict[str, Any]) -> SearchIntent:
     profile_data = _profile_data_dict(profile)
     extracted_summary = profile_data.get("extracted_summary_json") or {}
     structured_profile = extracted_summary.get(PROFILE_SCHEMA_KEY) if isinstance(extracted_summary.get(PROFILE_SCHEMA_KEY), dict) else {}
     if not structured_profile and isinstance(profile_data.get("structured_profile_json"), dict):
         structured_profile = profile_data.get("structured_profile_json") or {}
+    persisted_intent = structured_profile.get("search_intent") if isinstance(structured_profile.get("search_intent"), dict) else {}
     targeting = structured_profile.get("targeting") if isinstance(structured_profile.get("targeting"), dict) else {}
 
     explicit_locations = _dedupe_preserving_order(list(targeting.get("preferred_locations") or []))
@@ -216,15 +217,23 @@ def profile_search_constraints(profile: CandidateProfile | dict[str, Any]) -> di
     else:
         defaulted_constraints.append("work_mode")
 
-    return {
-        "preferred_locations": preferred_locations,
-        "target_roles": target_roles[:4],
-        "work_mode_preference": work_mode_preference,
-        "applied_constraints": applied_constraints,
-        "defaulted_constraints": defaulted_constraints,
-        "explicit_target_roles": explicit_target_roles,
-        "explicit_work_mode": explicit_work_mode != "unspecified",
-    }
+    return SearchIntent(
+        target_roles=target_roles[:4],
+        preferred_locations=preferred_locations,
+        work_mode_preference=work_mode_preference,
+        seniority_guess=profile_data.get("seniority_guess") or persisted_intent.get("seniority_guess"),
+        min_seniority_band=str(profile_data.get("min_seniority_band") or persisted_intent.get("min_seniority_band") or "mid"),
+        max_seniority_band=str(profile_data.get("max_seniority_band") or persisted_intent.get("max_seniority_band") or "senior"),
+        applied_constraints=applied_constraints,
+        defaulted_constraints=defaulted_constraints,
+        explicit_target_roles=explicit_target_roles,
+        explicit_preferred_locations=explicit_locations,
+        explicit_work_mode=explicit_work_mode != "unspecified",
+    )
+
+
+def profile_search_constraints(profile: CandidateProfile | dict[str, Any]) -> dict[str, Any]:
+    return build_search_intent(profile).model_dump()
 
 
 def _extract_summary(raw_text: str) -> dict:
@@ -315,7 +324,7 @@ def get_candidate_profile(session: Session) -> CandidateProfile:
 def profile_to_payload(profile: CandidateProfile) -> CandidateProfilePayload:
     extracted_summary = profile.extracted_summary_json or {}
     structured_profile = extracted_summary.get(PROFILE_SCHEMA_KEY)
-    constraints = profile_search_constraints(profile)
+    search_intent = build_search_intent(profile)
     payload = CandidateProfilePayload(
         profile_schema_version=structured_profile.get("version", "v1") if structured_profile else "v1",
         name=profile.name,
@@ -327,8 +336,8 @@ def profile_to_payload(profile: CandidateProfile) -> CandidateProfilePayload:
         preferred_domains_json=profile.preferred_domains_json or [],
         excluded_companies_json=profile.excluded_companies_json or [],
         preferred_locations_json=profile.preferred_locations_json or [],
-        target_roles_json=constraints["target_roles"],
-        work_mode_preference=constraints["work_mode_preference"],
+        target_roles_json=search_intent.target_roles,
+        work_mode_preference=search_intent.work_mode_preference,
         seniority_guess=profile.seniority_guess,
         stage_preferences_json=profile.stage_preferences_json or [],
         core_titles_json=profile.core_titles_json or [],
@@ -467,7 +476,11 @@ def build_profile_data_inventory(profile: CandidateProfile | dict[str, Any]) -> 
 
 
 def _with_structured_profile(payload: CandidateProfilePayload) -> CandidateProfilePayload:
-    return CandidateProfilePayload(**payload.model_dump())
+    normalized = CandidateProfilePayload(**payload.model_dump())
+    search_intent = build_search_intent(normalized.model_dump())
+    if normalized.structured_profile_json is not None:
+        normalized.structured_profile_json.search_intent = search_intent
+    return normalized
 
 
 def _merge_structured_profile(extracted_summary_json: dict, payload: CandidateProfilePayload) -> dict:

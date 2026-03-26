@@ -25,7 +25,7 @@ from services.ai_judges import (
     plan_search_with_ai,
 )
 from services.company_discovery import CompanyDiscoveryCandidate, build_query_inputs, triage_candidate
-from services.profile import profile_search_constraints
+from services.profile import build_search_intent
 
 
 logger = get_logger(__name__)
@@ -44,7 +44,7 @@ def _top_geographies(preferred_locations: list[str]) -> list[str]:
     ][:2]
 
 
-def _apply_profile_search_constraints(base_queries: list[str], constraints: dict[str, object]) -> list[str]:
+def _apply_profile_search_constraints(base_queries: list[str], search_intent) -> list[str]:
     queries: list[str] = []
     seen: set[str] = set()
 
@@ -55,9 +55,9 @@ def _apply_profile_search_constraints(base_queries: list[str], constraints: dict
         seen.add(normalized)
         queries.append(normalized)
 
-    target_roles = list(constraints.get("target_roles") or [])
-    preferred_locations = list(constraints.get("preferred_locations") or [])
-    work_mode_preference = str(constraints.get("work_mode_preference") or "unspecified")
+    target_roles = list(search_intent.target_roles or [])
+    preferred_locations = list(search_intent.preferred_locations or [])
+    work_mode_preference = str(search_intent.work_mode_preference or "unspecified")
     top_geographies = _top_geographies(preferred_locations)
 
     for role in target_roles[:3]:
@@ -106,7 +106,7 @@ def _recent_successes(session: Session) -> dict[str, list[str]]:
 def planner_agent(session: Session, profile: CandidateProfile, settings: Settings | None = None) -> dict:
     settings = settings or get_settings()
     query_inputs = build_query_inputs(session, profile)
-    constraints = profile_search_constraints(profile)
+    search_intent = build_search_intent(profile)
     learning = (profile.extracted_summary_json or {}).get("learning", {})
     successes = _recent_successes(session)
     recent_discoveries = session.scalars(
@@ -126,7 +126,7 @@ def planner_agent(session: Session, profile: CandidateProfile, settings: Setting
         if row.expansion_status in {"empty", "blocked"}
     ][:5]
     deterministic_queries = build_search_queries(
-        core_titles=constraints["target_roles"] or profile.core_titles_json or profile.preferred_titles_json or [],
+        core_titles=search_intent.target_roles or profile.core_titles_json or profile.preferred_titles_json or [],
         adjacent_titles=profile.adjacent_titles_json or [],
         preferred_domains=profile.preferred_domains_json or [],
         watchlist_items=[row.company_name for row in recent_discoveries[:4]],
@@ -141,7 +141,7 @@ def planner_agent(session: Session, profile: CandidateProfile, settings: Setting
             deterministic_queries.append(f'"{synonym}" remote us careers')
             deterministic_queries.append(f'"{synonym}" startup greenhouse')
             deterministic_queries.append(f'"{synonym}" startup ashby')
-    deterministic_queries = _apply_profile_search_constraints(list(dict.fromkeys(deterministic_queries)), constraints)
+    deterministic_queries = _apply_profile_search_constraints(list(dict.fromkeys(deterministic_queries)), search_intent)
 
     ai_plan = plan_search_with_ai(
         profile_text=profile.raw_resume_text or (profile.extracted_summary_json or {}).get("summary", ""),
@@ -170,11 +170,12 @@ def planner_agent(session: Session, profile: CandidateProfile, settings: Setting
         "company_archetypes": (ai_plan or {}).get("company_archetypes", profile.preferred_domains_json or []),
         "priority_notes": (ai_plan or {}).get("priority_notes", []),
         "queries": queries,
-        "profile_constraints_applied": constraints["applied_constraints"],
-        "profile_constraints_defaulted": constraints["defaulted_constraints"],
-        "target_roles": constraints["target_roles"],
-        "preferred_locations": constraints["preferred_locations"],
-        "work_mode_preference": constraints["work_mode_preference"],
+        "profile_constraints_applied": search_intent.applied_constraints,
+        "profile_constraints_defaulted": search_intent.defaulted_constraints,
+        "search_intent": search_intent.model_dump(),
+        "target_roles": search_intent.target_roles,
+        "preferred_locations": search_intent.preferred_locations,
+        "work_mode_preference": search_intent.work_mode_preference,
         "successful_companies": successes["successful_companies"],
         "successful_titles": successes["successful_titles"],
         "recent_failures": recent_failures,

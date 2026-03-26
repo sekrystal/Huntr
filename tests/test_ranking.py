@@ -147,6 +147,7 @@ def test_explicit_target_role_changes_title_fit_and_score() -> None:
     assert targeted["title_fit_label"] == "target role match"
     assert targeted["composite"] > baseline["composite"]
     assert "target role" in targeted["matched_profile_fields"]
+    assert targeted["search_intent"]["target_roles"] == ["deployment strategist"]
 
 
 def test_explicit_work_mode_preference_penalizes_mismatch() -> None:
@@ -194,3 +195,4 @@ def test_explicit_work_mode_preference_penalizes_mismatch() -> None:
     assert onsite["location_fit"] > remote["location_fit"]
     assert onsite["work_mode_match"] == "onsite"
     assert remote["work_mode_match"] == "remote"
+    assert onsite["search_intent"]["work_mode_preference"] == "onsite"

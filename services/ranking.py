@@ -4,7 +4,7 @@ import re
 from typing import Optional
 
 from core.models import CandidateProfile
-from services.profile import profile_search_constraints
+from services.profile import build_search_intent
 
 
 ROLE_FAMILY_KEYWORDS = {
@@ -67,14 +67,14 @@ def classify_title_fit(profile: CandidateProfile, title: str, description_text: 
     title_lower = title.lower()
     description_lower = description_text.lower()
     matched_fields: list[str] = []
-    constraints = profile_search_constraints(profile)
+    search_intent = build_search_intent(profile)
 
     if any(excluded.lower() in title_lower for excluded in profile.excluded_titles_json or []):
         return "excluded", -10.0, ["excluded title"]
 
     core_titles = [item.lower() for item in (profile.core_titles_json or profile.preferred_titles_json or [])]
     adjacent_titles = [item.lower() for item in (profile.adjacent_titles_json or [])]
-    explicit_target_roles = [item.lower() for item in constraints["explicit_target_roles"]]
+    explicit_target_roles = [item.lower() for item in search_intent.explicit_target_roles]
 
     if explicit_target_roles and any(target_role in title_lower for target_role in explicit_target_roles):
         matched_fields.append("target role")
@@ -153,13 +153,13 @@ def score_lead(
     feedback_learning: Optional[dict] = None,
 ) -> dict:
     feedback_learning = feedback_learning or {}
-    constraints = profile_search_constraints(profile)
+    search_intent = build_search_intent(profile)
     role_family = infer_role_family(title, description_text)
     title_fit_label, title_fit_score, matched_title_fields = classify_title_fit(profile, title, description_text)
     qualification_fit_label, qualification_score, qualification_reasons = classify_qualification_fit(profile, title, description_text)
     matched_profile_fields = list(dict.fromkeys([*matched_title_fields, *qualification_reasons]))
-    preferred_locations = constraints["preferred_locations"]
-    work_mode_preference = constraints["work_mode_preference"]
+    preferred_locations = search_intent.preferred_locations
+    work_mode_preference = search_intent.work_mode_preference
     lead_work_mode = infer_work_mode(location, description_text)
 
     freshness_score = {"fresh": 1.6, "recent": 1.0, "stale": -1.2, "unknown": -0.5}[freshness_label]
@@ -172,9 +172,9 @@ def score_lead(
         matched_profile_fields.append("preferred geography")
     if work_mode_preference != "unspecified":
         if lead_work_mode == work_mode_preference:
-            location_fit += 0.6 if constraints["explicit_work_mode"] else 0.3
+            location_fit += 0.6 if search_intent.explicit_work_mode else 0.3
             matched_profile_fields.append("work mode preference")
-        elif constraints["explicit_work_mode"] and lead_work_mode != "unspecified":
+        elif search_intent.explicit_work_mode and lead_work_mode != "unspecified":
             location_fit -= 0.6
     domain_fit = 0.9 if company_domain and any(item.lower() in company_domain.lower() for item in (profile.preferred_domains_json or [])) else 0.0
     stage_fit = 0.5 if any(stage in description_text.lower() for stage in (profile.stage_preferences_json or [])) else 0.0
@@ -262,10 +262,11 @@ def score_lead(
         "qualification_fit_label": qualification_fit_label,
         "matched_profile_fields": list(dict.fromkeys(matched_profile_fields)),
         "role_family": role_family,
-        "target_roles": constraints["target_roles"],
+        "search_intent": search_intent.model_dump(),
+        "target_roles": search_intent.target_roles,
         "preferred_locations": preferred_locations,
         "work_mode_preference": work_mode_preference,
         "work_mode_match": lead_work_mode if work_mode_preference != "unspecified" else "not_applied",
-        "applied_profile_constraints": constraints["applied_constraints"],
-        "defaulted_profile_constraints": constraints["defaulted_constraints"],
+        "applied_profile_constraints": search_intent.applied_constraints,
+        "defaulted_profile_constraints": search_intent.defaulted_constraints,
     }

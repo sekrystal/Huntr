@@ -225,6 +225,9 @@ def test_planner_agent_applies_profile_driven_role_geography_and_work_mode_const
     assert "target_roles" in plan["profile_constraints_applied"]
     assert "work_mode" in plan["profile_constraints_applied"]
     assert "geography" in plan["profile_constraints_applied"]
+    assert plan["search_intent"]["target_roles"] == ["founding operations lead"]
+    assert plan["search_intent"]["preferred_locations"] == ["san francisco"]
+    assert plan["search_intent"]["work_mode_preference"] == "onsite"
     assert plan["target_roles"] == ["founding operations lead"]
     assert plan["work_mode_preference"] == "onsite"
     assert any("san francisco" in query.lower() for query in plan["queries"])

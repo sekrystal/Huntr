@@ -4,7 +4,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from core.models import Base
-from core.schemas import CandidateProfilePayload, StructuredCandidateProfile
+from core.schemas import CandidateProfilePayload, SearchIntent, StructuredCandidateProfile
 from services.document_ingest import preview_resume_text, preview_resume_upload
 from services.network_import import match_referral_paths, parse_network_csv
 from services.profile import (
@@ -70,6 +70,14 @@ def test_candidate_profile_payload_builds_structured_schema_from_flat_fields() -
     assert payload.structured_profile_json.targeting.preferred_titles == ["chief of staff", "operator"]
     assert payload.structured_profile_json.targeting.target_roles == ["founding operations lead"]
     assert payload.structured_profile_json.targeting.work_mode_preference == "remote"
+    assert payload.structured_profile_json.search_intent == SearchIntent(
+        target_roles=["founding operations lead"],
+        preferred_locations=["remote"],
+        work_mode_preference="remote",
+        seniority_guess="senior",
+        min_seniority_band="mid",
+        max_seniority_band="staff",
+    )
     assert payload.structured_profile_json.targeting.confirmed_skills == ["sql", "stakeholder management"]
     assert payload.structured_profile_json.targeting.competencies == ["process design"]
     assert payload.structured_profile_json.targeting.explicit_preferences == ["hands-on teams"]
@@ -115,6 +123,19 @@ def test_update_candidate_profile_syncs_structured_schema_back_to_flat_fields() 
     assert profile.stage_preferences_json == ["seed"]
     assert profile.minimum_fit_threshold == 3.4
     assert profile.extracted_summary_json["structured_profile"]["scoring"]["minimum_fit_threshold"] == 3.4
+    assert profile.extracted_summary_json["structured_profile"]["search_intent"] == {
+        "target_roles": ["founding operations lead", "chief of staff"],
+        "preferred_locations": ["san francisco"],
+        "work_mode_preference": "hybrid",
+        "seniority_guess": "senior",
+        "min_seniority_band": "mid",
+        "max_seniority_band": "staff",
+        "applied_constraints": ["geography", "target_roles", "work_mode"],
+        "defaulted_constraints": [],
+        "explicit_target_roles": ["founding operations lead", "chief of staff"],
+        "explicit_preferred_locations": ["san francisco"],
+        "explicit_work_mode": True,
+    }
     assert profile.extracted_summary_json["structured_profile"]["targeting"]["confirmed_skills"] == ["customer discovery", "sql"]
     assert profile.extracted_summary_json["structured_profile"]["targeting"]["competencies"] == ["systems thinking"]
     assert profile.extracted_summary_json["structured_profile"]["targeting"]["explicit_preferences"] == ["small teams", "remote-friendly"]
@@ -295,3 +316,26 @@ def test_profile_search_constraints_report_applied_vs_defaulted_fields() -> None
     assert constraints["work_mode_preference"] == "onsite"
     assert constraints["applied_constraints"] == ["geography", "target_roles", "work_mode"]
     assert constraints["defaulted_constraints"] == []
+
+
+def test_profile_search_constraints_construct_search_intent_when_not_persisted() -> None:
+    payload = CandidateProfilePayload(
+        preferred_titles_json=["chief of staff"],
+        core_titles_json=["chief of staff"],
+        preferred_locations_json=["new york", "remote"],
+        target_roles_json=["strategic programs lead"],
+        work_mode_preference="remote",
+        seniority_guess="senior",
+        min_seniority_band="mid",
+        max_seniority_band="staff",
+    )
+
+    raw_profile = payload.model_dump()
+    raw_profile["structured_profile_json"].pop("search_intent", None)
+    constraints = profile_search_constraints(raw_profile)
+
+    assert constraints["target_roles"] == ["strategic programs lead"]
+    assert constraints["preferred_locations"] == ["new york", "remote"]
+    assert constraints["work_mode_preference"] == "remote"
+    assert constraints["min_seniority_band"] == "mid"
+    assert constraints["max_seniority_band"] == "staff"
