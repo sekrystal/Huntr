@@ -884,6 +884,7 @@ class DiscoveryStatusResponse(BaseModel):
     recent_ashby_identifiers: list[dict[str, Any]] = Field(default_factory=list)
     recent_geography_rejections: list[dict[str, Any]] = Field(default_factory=list)
     recent_agentic_leads: list[dict[str, Any]] = Field(default_factory=list)
+    agentic_slice_status: dict[str, Any] = Field(default_factory=dict)
     next_recommended_queries: list[str] = Field(default_factory=list)
     latest_openai_usage: dict[str, bool] = Field(default_factory=dict)
     cycle_metrics: dict[str, Any] = Field(default_factory=dict)

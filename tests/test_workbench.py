@@ -313,6 +313,34 @@ def test_discovery_source_matrix_frame_exposes_truth_columns() -> None:
     assert frame["blocked_reason"].tolist() == ["", "cooldown"]
 
 
+def test_agentic_leads_frame_exposes_verified_ranked_slice_columns() -> None:
+    frame = ui_app.agentic_leads_frame(
+        [
+            {
+                "company_name": "Acme",
+                "title": "Founding Operations Lead",
+                "recommendation_score": 8.7,
+                "rank_label": "strong",
+                "confidence_label": "high",
+                "freshness_label": "fresh",
+                "verified": True,
+                "verification_status": "active",
+                "action_label": "Act now",
+                "match_summary": "Strong recommendation at 8.70 with high confidence.",
+                "source_lineage": "yc_jobs+search_web",
+                "updated_at": "2026-03-25T12:00:00Z",
+                "url": "https://www.workatastartup.com/jobs/12345",
+            }
+        ]
+    )
+
+    assert frame["company"].tolist() == ["Acme"]
+    assert frame["verification_status"].tolist() == ["active"]
+    assert frame["verified"].tolist() == ["yes"]
+    assert frame["recommendation_score"].tolist() == [8.7]
+    assert frame["match_summary"].tolist() == ["Strong recommendation at 8.70 with high confidence."]
+
+
 def test_recommendation_table_explanation_prefers_structured_score_headline() -> None:
     summary = ui_app.recommendation_table_explanation(
         {

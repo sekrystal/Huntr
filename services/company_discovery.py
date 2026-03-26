@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from connectors.search_web import SearchDiscoveryResult
 from core.config import Settings, get_settings
-from core.models import AgentRun, Application, CompanyDiscovery, ConnectorHealth, Lead
+from core.models import AgentRun, Application, CompanyDiscovery, ConnectorHealth, Lead, Listing
 from core.schemas import CompanyDiscoveryRowResponse, DiscoverySourceMatrixRow, DiscoveryStatusResponse
 from services.connector_admin import connector_blocked_reason
 from services.ops import get_runtime_connector_set
@@ -512,6 +512,80 @@ def _serialize_agent_run(row: AgentRun | None) -> dict[str, object] | None:
         "summary": row.summary,
         "created_at": row.created_at.isoformat(),
         "metadata_json": row.metadata_json or {},
+    }
+
+
+def _recommendation_headline(lead: Lead) -> str:
+    score_payload = dict(lead.score_breakdown_json or {})
+    explanation = dict(score_payload.get("explanation") or {})
+    return (
+        explanation.get("headline")
+        or explanation.get("summary")
+        or lead.explanation
+        or score_payload.get("action_explanation")
+        or "Recommendation explanation unavailable."
+    )
+
+
+def _recommendation_score(lead: Lead) -> float:
+    score_payload = dict(lead.score_breakdown_json or {})
+    return float(score_payload.get("final_score", score_payload.get("composite", 0.0)) or 0.0)
+
+
+def _agentic_lead_payload(lead: Lead, listing: Listing | None) -> dict[str, object]:
+    score_payload = dict(lead.score_breakdown_json or {})
+    evidence = dict(lead.evidence_json or {})
+    verification = dict((listing.metadata_json or {}).get("verification") or {}) if listing is not None else {}
+    return {
+        "lead_id": lead.id,
+        "company_name": lead.company_name,
+        "title": lead.primary_title,
+        "url": listing.url if listing is not None else None,
+        "source_platform": evidence.get("source_platform"),
+        "source_provenance": evidence.get("source_provenance"),
+        "source_lineage": evidence.get("source_lineage"),
+        "discovery_source": evidence.get("discovery_source"),
+        "rank_label": lead.rank_label,
+        "confidence_label": lead.confidence_label,
+        "freshness_label": lead.freshness_label,
+        "recommendation_score": _recommendation_score(lead),
+        "action_label": score_payload.get("action_label"),
+        "action_explanation": score_payload.get("action_explanation"),
+        "match_summary": _recommendation_headline(lead),
+        "verification_status": verification.get("listing_status") or (listing.listing_status if listing is not None else "unknown"),
+        "dead_link_detected": bool(verification.get("dead_link_detected")),
+        "verified": not bool(verification.get("dead_link_detected")) and (verification.get("listing_status") or (listing.listing_status if listing is not None else None)) == "active",
+        "updated_at": lead.updated_at.isoformat() if lead.updated_at else None,
+    }
+
+
+def _agentic_slice_status(agentic_leads: list[dict[str, object]], cycle_metrics: dict[str, object]) -> dict[str, object]:
+    if agentic_leads:
+        return {
+            "status": "verified_jobs_available",
+            "summary": f"{len(agentic_leads)} verified search-discovered job(s) are ranked and ready in the UI.",
+            "verified_jobs": len(agentic_leads),
+            "zero_yield": False,
+        }
+
+    zero_yield = dict(cycle_metrics.get("search_zero_yield") or {})
+    if zero_yield:
+        reason = str(zero_yield.get("reason") or "search provider returned no accepted results")
+        attempts = int(zero_yield.get("zero_yield_attempt_count", 0) or 0)
+        return {
+            "status": "zero_yield",
+            "summary": f"Zero verified jobs this cycle. Search discovery returned no accepted results after {attempts} attempt(s): {reason}.",
+            "verified_jobs": 0,
+            "zero_yield": True,
+            "reason": reason,
+            "zero_yield_attempt_count": attempts,
+        }
+
+    return {
+        "status": "no_verified_jobs",
+        "summary": "No verified search-discovered jobs are currently available in the UI.",
+        "verified_jobs": 0,
+        "zero_yield": False,
     }
 
 
@@ -1118,12 +1192,35 @@ def build_discovery_status(session: Session) -> DiscoveryStatusResponse:
         .order_by(Lead.updated_at.desc())
         .limit(40)
     ).all()
-    agentic_leads = session.scalars(
+    candidate_agentic_leads = session.scalars(
         select(Lead)
         .where(Lead.hidden.is_(False))
         .order_by(Lead.updated_at.desc())
         .limit(30)
     ).all()
+    listing_ids = sorted({lead.listing_id for lead in candidate_agentic_leads if lead.listing_id})
+    listings_by_id = {
+        listing.id: listing
+        for listing in session.scalars(select(Listing).where(Listing.id.in_(listing_ids))).all()
+    } if listing_ids else {}
+    agentic_leads = [
+        _agentic_lead_payload(lead, listings_by_id.get(lead.listing_id))
+        for lead in candidate_agentic_leads
+        if (lead.evidence_json or {}).get("discovery_source") == "search_web"
+        and lead.listing_id
+        and listings_by_id.get(lead.listing_id) is not None
+        and not bool(dict((listings_by_id.get(lead.listing_id).metadata_json or {}).get("verification") or {}).get("dead_link_detected"))
+        and (dict((listings_by_id.get(lead.listing_id).metadata_json or {}).get("verification") or {}).get("listing_status") or listings_by_id.get(lead.listing_id).listing_status) == "active"
+    ]
+    agentic_leads.sort(
+        key=lambda item: (
+            float(item.get("recommendation_score") or 0.0),
+            str(item.get("updated_at") or ""),
+            str(item.get("company_name") or ""),
+        ),
+        reverse=True,
+    )
+    agentic_leads = agentic_leads[:12]
     return DiscoveryStatusResponse(
         total_known_companies=session.scalar(select(func.count(CompanyDiscovery.id))) or 0,
         discovered_last_24h=session.scalar(select(func.count(CompanyDiscovery.id)).where(CompanyDiscovery.last_discovered_at >= since)) or 0,
@@ -1172,21 +1269,8 @@ def build_discovery_status(session: Session) -> DiscoveryStatusResponse:
             for lead in geography_rejections
             if (lead.evidence_json or {}).get("suppression_category") == "location"
         ][:12],
-        recent_agentic_leads=[
-            {
-                "company_name": lead.company_name,
-                "title": lead.primary_title,
-                "source_platform": (lead.evidence_json or {}).get("source_platform"),
-                "source_provenance": (lead.evidence_json or {}).get("source_provenance"),
-                "source_lineage": (lead.evidence_json or {}).get("source_lineage"),
-                "discovery_source": (lead.evidence_json or {}).get("discovery_source"),
-                "rank_label": lead.rank_label,
-                "confidence_label": lead.confidence_label,
-                "updated_at": lead.updated_at.isoformat() if lead.updated_at else None,
-            }
-            for lead in agentic_leads
-            if (lead.evidence_json or {}).get("discovery_source") == "search_web"
-        ][:12],
+        recent_agentic_leads=agentic_leads,
+        agentic_slice_status=_agentic_slice_status(agentic_leads, cycle_metrics),
         next_recommended_queries=[
             note
             for run in recent_runs

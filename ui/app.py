@@ -358,6 +358,29 @@ def discovery_source_matrix_frame(source_matrix: list[dict[str, Any]]) -> pd.Dat
     return pd.DataFrame(rows)
 
 
+def agentic_leads_frame(agentic_leads: list[dict[str, Any]]) -> pd.DataFrame:
+    rows: list[dict[str, Any]] = []
+    for lead in agentic_leads:
+        rows.append(
+            {
+                "company": lead.get("company_name") or "",
+                "title": lead.get("title") or "",
+                "recommendation_score": float(lead.get("recommendation_score") or 0.0),
+                "rank": lead.get("rank_label") or "",
+                "confidence": lead.get("confidence_label") or "",
+                "freshness": lead.get("freshness_label") or "",
+                "verified": "yes" if lead.get("verified") else "no",
+                "verification_status": lead.get("verification_status") or "",
+                "action": lead.get("action_label") or "",
+                "match_summary": lead.get("match_summary") or "",
+                "source": lead.get("source_lineage") or lead.get("source_platform") or "",
+                "updated_at": format_timestamp(lead.get("updated_at")),
+                "url": lead.get("url") or "",
+            }
+        )
+    return pd.DataFrame(rows)
+
+
 def format_timestamp(value: Optional[str]) -> str:
     if not value:
         return ""
@@ -1412,9 +1435,17 @@ def render_discovery_tab() -> None:
     if payload.get("recent_geography_rejections"):
         st.markdown("#### Geography Rejections")
         st.dataframe(pd.DataFrame(payload["recent_geography_rejections"]), use_container_width=True, hide_index=True)
+    st.markdown("#### End-to-End Discovery Slice")
+    slice_status = payload.get("agentic_slice_status") or {}
+    if slice_status.get("summary"):
+        if slice_status.get("status") == "zero_yield":
+            st.warning(slice_status["summary"])
+        else:
+            st.caption(slice_status["summary"])
     if payload.get("recent_agentic_leads"):
-        st.markdown("#### Agent-Discovered Visible Leads")
-        st.dataframe(pd.DataFrame(payload["recent_agentic_leads"]), use_container_width=True, hide_index=True)
+        st.dataframe(agentic_leads_frame(payload["recent_agentic_leads"]), use_container_width=True, hide_index=True)
+    elif not slice_status.get("summary"):
+        st.info("No verified search-discovered jobs are currently available in the UI.")
     if payload.get("blocked_or_cooled_down"):
         st.markdown("#### Blocked Or Cooled Down")
         blocked_df = pd.DataFrame(payload["blocked_or_cooled_down"])

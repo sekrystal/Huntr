@@ -9,8 +9,9 @@ from sqlalchemy.orm import sessionmaker
 from connectors.search_web import SearchDiscoveryResult
 from core.config import Settings
 from core.schemas import LeadResponse
-from core.models import AgentActivity, Base, Lead, Listing
+from core.models import AgentActivity, AgentRun, Base, Lead, Listing
 from core.schemas import SyncResult
+from services.company_discovery import build_discovery_status
 from services.normalize import normalize_ashby_job, normalize_greenhouse_job, normalize_yc_job
 from services.discovery_agents import planner_agent
 from services.pipeline import ingest_user_job_link, recommendation_component_value, recommendation_score_value, run_scout_agent
@@ -625,3 +626,98 @@ def test_sync_all_surfaces_yc_jobs_listing_from_search_discovery(monkeypatch) ->
     assert listing.listing_status == "active"
     assert (listing.metadata_json or {})["source_lineage"] == "yc_jobs+search_web"
     assert (lead.evidence_json or {})["source_lineage"] == "yc_jobs+search_web"
+
+
+def test_build_discovery_status_surfaces_verified_ranked_agentic_jobs() -> None:
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(engine)
+    session = sessionmaker(bind=engine, expire_on_commit=False)()
+
+    listing = Listing(
+        company_name="Acme",
+        title="Founding Operations Lead",
+        location="San Francisco, CA",
+        url="https://www.workatastartup.com/jobs/12345",
+        source_type="yc_jobs",
+        listing_status="active",
+        freshness_days=1,
+        metadata_json={
+            "verification": {
+                "canonical_url": "https://www.workatastartup.com/jobs/12345",
+                "freshness_label": "fresh",
+                "listing_status": "active",
+                "dead_link_detected": False,
+            }
+        },
+    )
+    session.add(listing)
+    session.flush()
+    session.add(
+        Lead(
+            lead_type="listing",
+            company_name="Acme",
+            primary_title="Founding Operations Lead",
+            listing_id=listing.id,
+            rank_label="strong",
+            confidence_label="high",
+            freshness_label="fresh",
+            qualification_fit_label="strong fit",
+            explanation="Strong operator match with fresh, verified evidence.",
+            hidden=False,
+            score_breakdown_json={
+                "final_score": 8.7,
+                "action_label": "Act now",
+                "action_explanation": "Apply soon.",
+                "explanation": {"headline": "Strong recommendation at 8.70 with high confidence."},
+            },
+            evidence_json={
+                "source_platform": "yc_jobs",
+                "source_lineage": "yc_jobs+search_web",
+                "source_provenance": "discovered_new",
+                "discovery_source": "search_web",
+            },
+        )
+    )
+    session.add(
+        AgentRun(
+            agent_name="Discovery",
+            action="recorded discovery cycle metrics",
+            summary="Discovery cycle metrics recorded.",
+            affected_count=1,
+            metadata_json={"cycle_metrics": {"search_zero_yield": {"reason": "search provider returned no accepted results", "zero_yield_attempt_count": 2}}},
+        )
+    )
+    session.commit()
+
+    status = build_discovery_status(session)
+
+    assert status.agentic_slice_status["status"] == "verified_jobs_available"
+    assert status.agentic_slice_status["verified_jobs"] == 1
+    assert status.recent_agentic_leads[0]["company_name"] == "Acme"
+    assert status.recent_agentic_leads[0]["verified"] is True
+    assert status.recent_agentic_leads[0]["verification_status"] == "active"
+    assert status.recent_agentic_leads[0]["recommendation_score"] == 8.7
+    assert status.recent_agentic_leads[0]["match_summary"] == "Strong recommendation at 8.70 with high confidence."
+
+
+def test_build_discovery_status_reports_zero_yield_when_no_verified_agentic_jobs_exist() -> None:
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(engine)
+    session = sessionmaker(bind=engine, expire_on_commit=False)()
+    session.add(
+        AgentRun(
+            agent_name="Discovery",
+            action="recorded discovery cycle metrics",
+            summary="Discovery cycle metrics recorded.",
+            affected_count=0,
+            metadata_json={"cycle_metrics": {"search_zero_yield": {"reason": "provider self-links only", "zero_yield_attempt_count": 3}}},
+        )
+    )
+    session.commit()
+
+    status = build_discovery_status(session)
+
+    assert status.recent_agentic_leads == []
+    assert status.agentic_slice_status["status"] == "zero_yield"
+    assert status.agentic_slice_status["zero_yield"] is True
+    assert "provider self-links only" in status.agentic_slice_status["summary"]
