@@ -20,6 +20,7 @@ from services.company_discovery import (
     triage_candidate,
     upsert_discovered_company,
 )
+from services.discovery_agents import planner_agent
 
 
 def _session():
@@ -145,6 +146,35 @@ def test_company_discovery_budget_prefers_useful_and_limits_new_expansions() -> 
     selected = select_candidates_for_expansion(rows)
     assert len(selected) <= 4
     assert selected[0][1].utility_score >= selected[-1][1].utility_score
+
+
+def test_planner_agent_returns_structured_discovery_query_plans() -> None:
+    session = _session()
+    profile = _profile(session)
+    plan = planner_agent(session, profile, settings=Settings(discovery_max_search_queries_per_cycle=8))
+
+    assert "queries" in plan
+    assert len(plan["queries"]) <= 8
+    assert "structured_query_plans" in plan
+    assert set(plan["structured_query_plans"]) == {"ats", "search", "weak_signal"}
+    assert plan["query_plan_summary"]["ats"]["execution_targets"] == ["search_web"]
+    assert plan["query_plan_summary"]["weak_signal"]["execution_targets"] == ["x_search"]
+    assert plan["query_plan_summary"]["weak_signal"]["executable_count"] == 0
+
+
+def test_planner_agent_structured_plans_include_role_location_combinations_without_extraction_fields() -> None:
+    session = _session()
+    profile = _profile(session)
+    plan = planner_agent(session, profile, settings=Settings(discovery_max_search_queries_per_cycle=8))
+
+    search_entries = plan["structured_query_plans"]["search"]
+    ats_entries = plan["structured_query_plans"]["ats"]
+    weak_signal_entries = plan["structured_query_plans"]["weak_signal"]
+
+    assert any(entry["role"] == "chief of staff" and entry["location"] == "remote us" for entry in search_entries)
+    assert any(entry["role"] == "chief of staff" and entry["location"] == "san francisco" for entry in ats_entries)
+    assert any(entry["role"] == "business operations lead" and entry["location"] == "new york" for entry in weak_signal_entries)
+    assert all("url" not in entry and "board_locator" not in entry for entries in plan["structured_query_plans"].values() for entry in entries)
 
 
 def test_record_expansion_attempt_updates_yield_and_status() -> None:

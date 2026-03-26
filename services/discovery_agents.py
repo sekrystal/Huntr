@@ -11,6 +11,7 @@ from connectors.search_web import (
     ATSExtractionResult,
     SearchDiscoveryResult,
     build_search_queries,
+    classify_query_family,
     derive_search_results_from_extraction,
     extract_ats_identifiers_from_html,
     fetch_page_snapshot,
@@ -36,12 +37,95 @@ ROLE_SYNONYMS = {
 }
 
 
+def _dedupe_strings(values: list[str]) -> list[str]:
+    return list(dict.fromkeys(value.strip() for value in values if value and value.strip()))
+
+
 def _top_geographies(preferred_locations: list[str]) -> list[str]:
     return [
         location
         for location in preferred_locations
         if "remote" not in location.lower() and "hybrid" not in location.lower() and "onsite" not in location.lower()
     ][:2]
+
+
+def _planner_location_targets(search_intent) -> list[dict[str, str]]:
+    preferred_locations = list(search_intent.preferred_locations or [])
+    work_mode_preference = str(search_intent.work_mode_preference or "unspecified")
+    targets: list[dict[str, str]] = []
+
+    def add(location: str, work_mode: str) -> None:
+        normalized_location = (location or "").strip()
+        normalized_work_mode = (work_mode or "unspecified").strip() or "unspecified"
+        if not normalized_location:
+            return
+        target = {"location": normalized_location, "work_mode": normalized_work_mode}
+        if target not in targets:
+            targets.append(target)
+
+    if work_mode_preference == "remote" or any("remote" in location.lower() for location in preferred_locations):
+        add("remote us", "remote")
+    for geography in _top_geographies(preferred_locations):
+        add(geography, work_mode_preference)
+    if not targets:
+        add("remote us", "remote" if work_mode_preference == "remote" else "unspecified")
+    return targets[:3]
+
+
+def _structured_discovery_plans(search_intent) -> dict[str, list[dict[str, object]]]:
+    target_roles = _dedupe_strings(list(search_intent.target_roles or []))[:3]
+    location_targets = _planner_location_targets(search_intent)
+    plans: dict[str, list[dict[str, object]]] = {"ats": [], "search": [], "weak_signal": []}
+    seen: set[tuple[str, str, str, str]] = set()
+
+    def add(plan_type: str, *, role: str, location: str, work_mode: str, query_text: str, execution_target: str, executable: bool) -> None:
+        key = (plan_type, role, location, query_text)
+        if key in seen:
+            return
+        seen.add(key)
+        plans[plan_type].append(
+            {
+                "planner_type": plan_type,
+                "role": role,
+                "location": location,
+                "work_mode": work_mode,
+                "query_text": query_text,
+                "query_family": classify_query_family(query_text),
+                "query_classification": None,
+                "execution_target": execution_target,
+                "executable": executable,
+            }
+        )
+
+    for role in target_roles:
+        for target in location_targets:
+            location = target["location"]
+            work_mode = target["work_mode"]
+            if work_mode == "remote":
+                search_query = f'"{role}" remote us startup careers'
+                weak_signal_query = f'"{role}" remote us startup hiring'
+                greenhouse_query = f'site:job-boards.greenhouse.io "{role}" "remote"'
+                ashby_query = f'site:jobs.ashbyhq.com "{role}" "remote"'
+            elif work_mode in {"hybrid", "onsite"}:
+                search_query = f'"{role}" {work_mode} "{location}" startup careers'
+                weak_signal_query = f'"{role}" {work_mode} "{location}" startup hiring'
+                greenhouse_query = f'site:job-boards.greenhouse.io "{role}" "{location}"'
+                ashby_query = f'site:jobs.ashbyhq.com "{role}" "{location}"'
+            else:
+                search_query = f'"{role}" "{location}" startup careers'
+                weak_signal_query = f'"{role}" "{location}" startup hiring'
+                greenhouse_query = f'site:job-boards.greenhouse.io "{role}" "{location}"'
+                ashby_query = f'site:jobs.ashbyhq.com "{role}" "{location}"'
+
+            add("ats", role=role, location=location, work_mode=work_mode, query_text=greenhouse_query, execution_target="search_web", executable=True)
+            add("ats", role=role, location=location, work_mode=work_mode, query_text=ashby_query, execution_target="search_web", executable=True)
+            add("search", role=role, location=location, work_mode=work_mode, query_text=search_query, execution_target="search_web", executable=True)
+            add("weak_signal", role=role, location=location, work_mode=work_mode, query_text=weak_signal_query, execution_target="x_search", executable=False)
+
+    for plan_type, entries in plans.items():
+        for entry in entries:
+            entry["query_classification"] = plan_type
+    return plans
 
 
 def _apply_profile_search_constraints(base_queries: list[str], search_intent) -> list[str]:
@@ -163,6 +247,7 @@ def planner_agent(session: Session, profile: CandidateProfile, settings: Setting
         },
     )
     queries = list(dict.fromkeys((deterministic_queries + ai_queries)))[: settings.discovery_max_search_queries_per_cycle]
+    structured_query_plans = _structured_discovery_plans(search_intent)
     plan = {
         "generated_at": datetime.utcnow().isoformat(),
         "query_themes": (ai_plan or {}).get("query_themes", []),
@@ -170,6 +255,15 @@ def planner_agent(session: Session, profile: CandidateProfile, settings: Setting
         "company_archetypes": (ai_plan or {}).get("company_archetypes", profile.preferred_domains_json or []),
         "priority_notes": (ai_plan or {}).get("priority_notes", []),
         "queries": queries,
+        "structured_query_plans": structured_query_plans,
+        "query_plan_summary": {
+            plan_type: {
+                "count": len(entries),
+                "executable_count": sum(1 for entry in entries if entry.get("executable")),
+                "execution_targets": _dedupe_strings([str(entry.get("execution_target") or "") for entry in entries]),
+            }
+            for plan_type, entries in structured_query_plans.items()
+        },
         "profile_constraints_applied": search_intent.applied_constraints,
         "profile_constraints_defaulted": search_intent.defaulted_constraints,
         "search_intent": search_intent.model_dump(),
