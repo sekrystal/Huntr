@@ -428,6 +428,18 @@ def test_discovery_status_uses_latest_relevant_runs_beyond_recent_window() -> No
                 "discovered_companies_new_count": 0,
                 "agent_discovered_visible_leads_count": 0,
                 "accepted_results_count": 0,
+                "source_runtime_observer": {
+                    "search_web": {
+                        "run_count": 1,
+                        "failure_count": 0,
+                        "zero_yield_count": 1,
+                        "yielded_results_count": 0,
+                        "surfaced_jobs_count": 0,
+                        "fallback_count": 1,
+                        "fallback_order": ["provider_query", "provider_failover_rewrite", "scrape_parse_extraction"],
+                        "last_status": "empty",
+                    }
+                },
             }
         },
     )
@@ -484,6 +496,12 @@ def test_discovery_status_uses_latest_relevant_runs_beyond_recent_window() -> No
     assert status.latest_openai_usage == {"planner": True, "triage": True, "learning": False}
     assert status.cycle_metrics["agent_discovered_visible_leads_count"] == 0
     assert status.cycle_metrics["accepted_results_count"] == 0
+    search_row = next(item for item in status.source_matrix if item.source_key == "search_web")
+    assert search_row.ran is True
+    assert search_row.zero_yield is True
+    assert search_row.fallback_count == 1
+    assert search_row.fallback_order == ["provider_query", "provider_failover_rewrite", "scrape_parse_extraction"]
+    assert search_row.last_status == "empty"
 
 
 def test_candidate_from_search_result_preserves_query_family() -> None:

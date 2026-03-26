@@ -85,6 +85,50 @@ def _bump_query_family_metric(
     metrics[family][field] = int(metrics[family].get(field, 0)) + amount
 
 
+def _record_source_runtime_observer(
+    observer: dict[str, dict[str, object]],
+    source_key: str,
+    *,
+    attempted: bool = False,
+    failed: bool = False,
+    zero_yield: bool = False,
+    yielded_results: int = 0,
+    surfaced_jobs: int = 0,
+    fallback_used: bool = False,
+    fallback_order: list[str] | None = None,
+    status: str | None = None,
+) -> None:
+    entry = observer.setdefault(
+        source_key,
+        {
+            "run_count": 0,
+            "failure_count": 0,
+            "zero_yield_count": 0,
+            "yielded_results_count": 0,
+            "surfaced_jobs_count": 0,
+            "fallback_count": 0,
+            "fallback_order": [],
+            "last_status": None,
+        },
+    )
+    if attempted:
+        entry["run_count"] = int(entry.get("run_count", 0) or 0) + 1
+    if failed:
+        entry["failure_count"] = int(entry.get("failure_count", 0) or 0) + 1
+    if zero_yield:
+        entry["zero_yield_count"] = int(entry.get("zero_yield_count", 0) or 0) + 1
+    if yielded_results:
+        entry["yielded_results_count"] = int(entry.get("yielded_results_count", 0) or 0) + max(int(yielded_results), 0)
+    if surfaced_jobs:
+        entry["surfaced_jobs_count"] = int(entry.get("surfaced_jobs_count", 0) or 0) + max(int(surfaced_jobs), 0)
+    if fallback_used:
+        entry["fallback_count"] = int(entry.get("fallback_count", 0) or 0) + 1
+    if fallback_order is not None:
+        entry["fallback_order"] = list(fallback_order)
+    if status is not None:
+        entry["last_status"] = status
+
+
 def _search_fetch_diagnostics(connector: SearchDiscoveryConnector, search_queries: list[str]) -> dict[str, object]:
     diagnostics = dict(getattr(connector, "last_fetch_diagnostics", {}) or {})
     if diagnostics:
@@ -875,6 +919,7 @@ def sync_all(
     discovery_status: dict[str, object] = {}
     cycle_metrics: Counter[str] = Counter()
     query_family_metrics: dict[str, dict[str, int]] = {}
+    source_runtime_observer: dict[str, dict[str, object]] = {}
     ai_fit_runtime_state = {"remaining": settings.ai_fit_max_calls_per_cycle}
 
     watchlist_values = [
@@ -957,6 +1002,20 @@ def sync_all(
         search_diagnostics = _search_fetch_diagnostics(search_connector, search_execution.query_texts)
         cycle_metrics["search_fetch_diagnostics"] = search_diagnostics
         zero_yield_summary = _search_zero_yield_summary(search_diagnostics)
+        _record_source_runtime_observer(
+            source_runtime_observer,
+            "search_web",
+            attempted=bool(search_execution.query_texts),
+            failed=search_diagnostics.get("status") == "failed",
+            zero_yield=zero_yield_summary is not None,
+            yielded_results=len(search_execution.results),
+            fallback_order=list(search_diagnostics.get("fallback_order") or []),
+            status=(
+                "success"
+                if search_execution.results and search_diagnostics.get("status") == "not_run"
+                else str(search_diagnostics.get("status") or "not_run")
+            ),
+        )
         if zero_yield_summary is not None:
             cycle_metrics["search_zero_yield"] = zero_yield_summary
             logger.warning("[DISCOVERY_SEARCH_ZERO_YIELD] %s", zero_yield_summary)
@@ -1021,6 +1080,17 @@ def sync_all(
             len(derived_results),
             metadata_json=parser_execution.summary(),
         )
+        if extractions:
+            _record_source_runtime_observer(
+                source_runtime_observer,
+                "search_web_scrape_fallback",
+                attempted=True,
+                zero_yield=len(derived_results) == 0,
+                yielded_results=len(derived_results),
+                fallback_used=True,
+                fallback_order=["search_result_page_fetch", "ats_identifier_extraction"],
+                status="derived_candidates" if derived_results else "no_ats_identifiers_extracted",
+            )
         if extractions:
             new_greenhouse_tokens = {
                 token
@@ -1393,6 +1463,15 @@ def sync_all(
             ),
             date_fields=["first_published", "updated_at"],
         )
+        if greenhouse_tokens:
+            _record_source_runtime_observer(
+                source_runtime_observer,
+                "greenhouse",
+                attempted=True,
+                zero_yield=len(greenhouse_jobs) == 0,
+                yielded_results=len(greenhouse_jobs),
+                status="jobs_returned" if greenhouse_jobs else "empty_jobs",
+            )
     if "ashby" in enabled_connectors:
         ashby_orgs = list(dict.fromkeys(settings.ashby_orgs + list(discovered_ashby_queries)))
         logger.info(
@@ -1414,6 +1493,15 @@ def sync_all(
             ),
             date_fields=["publishedDate"],
         )
+        if ashby_orgs:
+            _record_source_runtime_observer(
+                source_runtime_observer,
+                "ashby",
+                attempted=True,
+                zero_yield=len(ashby_jobs) == 0,
+                yielded_results=len(ashby_jobs),
+                status="jobs_returned" if ashby_jobs else "empty_jobs",
+            )
     for discovery_key, payload in discovered_yc_jobs.items():
         try:
             final_url, html = fetch_page_snapshot(str(payload["result_url"]))
@@ -1464,6 +1552,15 @@ def sync_all(
                 "company_name": direct_job.company_name,
                 "title": direct_job.title,
             },
+        )
+    if discovered_yc_jobs:
+        _record_source_runtime_observer(
+            source_runtime_observer,
+            "yc_jobs",
+            attempted=True,
+            zero_yield=len(yc_jobs) == 0,
+            yielded_results=len(yc_jobs),
+            status="normalized" if yc_jobs else "direct_job_unparseable",
         )
     greenhouse_job_counts = dict(getattr(greenhouse_connector, "last_board_counts", {}) or {})
     ashby_job_counts = Counter(job.get("source_org_key") for job in ashby_jobs if job.get("source_org_key"))
@@ -1581,6 +1678,18 @@ def sync_all(
                 "status": row.expansion_status,
             },
         )
+        runtime_source_key = "search_web_scrape_fallback" if candidate.board_type == "careers_page" else candidate.board_type
+        _record_source_runtime_observer(
+            source_runtime_observer,
+            runtime_source_key,
+            attempted=runtime_source_key not in source_runtime_observer,
+            failed=bool(expansion_diagnostics.get("failure_boundary"))
+            and expansion_diagnostics.get("failure_boundary") not in {"connector_yield", "empty_discovered_surface", "scrape_parse_yield"},
+            zero_yield=result_count == 0,
+            fallback_used=bool(expansion_diagnostics.get("scrape_parse_attempted")),
+            fallback_order=list(expansion_diagnostics.get("fallback_order") or []),
+            status=str(expansion_diagnostics.get("surface_status") or row.expansion_status),
+        )
         cycle_metrics[f"{candidate.board_type}_expansion_attempts"] += 1
         _bump_query_family_metric(query_family_metrics, candidate.query_family, "expansion_attempts")
         if result_count > 0:
@@ -1610,6 +1719,14 @@ def sync_all(
             "x_search",
             partial(x_connector.fetch, queries, "x_search" in strict_live_connectors),
             date_fields=["published_at"],
+        )
+        _record_source_runtime_observer(
+            source_runtime_observer,
+            "x_search",
+            attempted=True,
+            zero_yield=len(x_raw_signals) == 0,
+            yielded_results=len(x_raw_signals),
+            status="signals_returned" if x_raw_signals else "empty_signals",
         )
 
     greenhouse_normalized = [normalize_greenhouse_job(job) for job in greenhouse_jobs]
@@ -1959,6 +2076,19 @@ def sync_all(
             location_filtered=counts.get("location", 0),
             count_attempt=False,
         )
+        runtime_source_key = "search_web_scrape_fallback" if row.board_type == "careers_page" else row.board_type
+        _record_source_runtime_observer(
+            source_runtime_observer,
+            runtime_source_key,
+            attempted=runtime_source_key not in source_runtime_observer and row.last_expanded_at is not None,
+            surfaced_jobs=counts.get("visible", 0),
+            status="productive" if counts.get("visible", 0) > 0 else "zero_visible_yield",
+        )
+        _record_source_runtime_observer(
+            source_runtime_observer,
+            "search_web",
+            surfaced_jobs=counts.get("visible", 0),
+        )
         _bump_query_family_metric(query_family_metrics, query_family, "visible_yield_count", counts.get("visible", 0))
         _bump_query_family_metric(query_family_metrics, query_family, "suppressed_yield_count", counts.get("suppressed", 0))
         _bump_query_family_metric(query_family_metrics, query_family, "location_filtered_count", counts.get("location", 0))
@@ -1984,6 +2114,7 @@ def sync_all(
     cycle_metrics["ai_fit_calls_remaining"] = ai_fit_runtime_state["remaining"]
     cycle_metrics["ai_fit_calls_used"] = max(settings.ai_fit_max_calls_per_cycle - ai_fit_runtime_state["remaining"], 0)
     cycle_metrics["query_family_metrics"] = query_family_metrics
+    cycle_metrics["source_runtime_observer"] = source_runtime_observer
     logger.info(
         "[LEARNING_UPDATE] %s",
         {
@@ -2023,6 +2154,7 @@ def sync_all(
         len(learning_update.get("next_queries", [])),
         metadata_json=learning_update,
     )
+    logger.info("[DISCOVERY_SOURCE_RUNTIME] %s", source_runtime_observer)
     logger.info("[DISCOVERY_CYCLE_METRICS] %s", dict(cycle_metrics))
     log_agent_run(
         session,

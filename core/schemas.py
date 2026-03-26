@@ -861,7 +861,11 @@ class DiscoverySourceMatrixRow(BaseModel):
     run_count: int = 0
     failure_count: int = 0
     zero_yield_count: int = 0
+    yielded_results_count: int = 0
     surfaced_jobs_count: int = 0
+    fallback_count: int = 0
+    fallback_order: list[str] = Field(default_factory=list)
+    last_status: Optional[str] = None
     summary: Optional[str] = None
 
 

@@ -760,9 +760,14 @@ def test_sync_all_persists_query_family_metrics(monkeypatch) -> None:
     source_truth = {item["source_key"]: item for item in result.discovery_status["source_matrix"]}
     assert source_truth["search_web"]["ran"] is True
     assert source_truth["search_web"]["zero_yield"] is False
+    assert source_truth["search_web"]["yielded_results_count"] == 1
+    assert source_truth["search_web"]["fallback_order"] == ["provider_query", "provider_failover_rewrite", "scrape_parse_extraction"]
+    assert source_truth["search_web"]["last_status"] == "success"
     assert source_truth["greenhouse"]["ran"] is True
     assert source_truth["greenhouse"]["zero_yield"] is True
     assert source_truth["greenhouse"]["surfaced_jobs_count"] == 0
+    assert source_truth["greenhouse"]["yielded_results_count"] == 0
+    assert source_truth["greenhouse"]["last_status"] == "zero_visible_yield"
 
     metrics_run = (
         session.query(AgentRun)
@@ -773,6 +778,11 @@ def test_sync_all_persists_query_family_metrics(monkeypatch) -> None:
     assert metrics_run is not None
     assert metrics_run.metadata_json["cycle_metrics"]["query_family_metrics"]["ats_direct"]["selected_for_expansion"] == 1
     assert metrics_run.metadata_json["cycle_metrics"]["query_family_metrics"]["ats_direct"]["zero_visible_yield_expansions"] == 1
+    observer = metrics_run.metadata_json["cycle_metrics"]["source_runtime_observer"]
+    assert observer["search_web"]["run_count"] == 1
+    assert observer["search_web"]["yielded_results_count"] == 1
+    assert observer["greenhouse"]["zero_yield_count"] == 1
+    assert observer["greenhouse"]["last_status"] == "zero_visible_yield"
     company = session.query(sync_service.CompanyDiscovery).filter(sync_service.CompanyDiscovery.discovery_key == "greenhouse:acme").one()
     assert company.metadata_json["expansion_diagnostics"]["status"] == "empty"
     assert company.metadata_json["expansion_diagnostics"]["failure_boundary"] == "connector_yield"
@@ -988,9 +998,12 @@ def test_sync_all_persists_productive_query_family_lineage(monkeypatch) -> None:
     source_truth = {item["source_key"]: item for item in result.discovery_status["source_matrix"]}
     assert source_truth["search_web"]["ran"] is True
     assert source_truth["search_web"]["surfaced_jobs_count"] == 1
+    assert source_truth["search_web"]["yielded_results_count"] == 1
     assert source_truth["greenhouse"]["ran"] is True
     assert source_truth["greenhouse"]["zero_yield"] is False
     assert source_truth["greenhouse"]["surfaced_jobs_count"] == 1
+    assert source_truth["greenhouse"]["yielded_results_count"] == 1
+    assert source_truth["greenhouse"]["last_status"] == "productive"
 
     company = session.query(sync_service.CompanyDiscovery).filter(sync_service.CompanyDiscovery.discovery_key == "greenhouse:acme").one()
     assert company.last_expansion_result_count == 1

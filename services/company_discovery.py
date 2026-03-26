@@ -960,9 +960,11 @@ def _format_source_truth_summary(
     run_count: int,
     failure_count: int,
     zero_yield_count: int,
+    yielded_results_count: int = 0,
     surfaced_jobs_count: int,
+    fallback_count: int = 0,
 ) -> str:
-    if run_count == 0 and failure_count == 0 and zero_yield_count == 0 and surfaced_jobs_count == 0:
+    if run_count == 0 and failure_count == 0 and zero_yield_count == 0 and yielded_results_count == 0 and surfaced_jobs_count == 0:
         return "No observed discovery runs or surfaced jobs yet."
 
     parts = [f"ran {run_count} time{'s' if run_count != 1 else ''}"] if run_count > 0 else []
@@ -970,9 +972,30 @@ def _format_source_truth_summary(
         parts.append(f"{failure_count} failure{'s' if failure_count != 1 else ''}")
     if zero_yield_count > 0:
         parts.append(f"{zero_yield_count} zero-yield run{'s' if zero_yield_count != 1 else ''}")
+    if yielded_results_count > 0:
+        parts.append(f"{yielded_results_count} yielded result{'s' if yielded_results_count != 1 else ''}")
     if surfaced_jobs_count > 0:
         parts.append(f"{surfaced_jobs_count} surfaced job{'s' if surfaced_jobs_count != 1 else ''}")
+    if fallback_count > 0:
+        parts.append(f"{fallback_count} fallback{'s' if fallback_count != 1 else ''}")
     return "; ".join(parts) if parts else "No observed discovery runs or surfaced jobs yet."
+
+
+def _observer_source_truth(cycle_metrics: dict[str, object], source_key: str) -> dict[str, object] | None:
+    observer = dict(cycle_metrics.get("source_runtime_observer") or {})
+    entry = observer.get(source_key)
+    if not isinstance(entry, dict):
+        return None
+    return {
+        "run_count": int(entry.get("run_count", 0) or 0),
+        "failure_count": int(entry.get("failure_count", 0) or 0),
+        "zero_yield_count": int(entry.get("zero_yield_count", 0) or 0),
+        "yielded_results_count": int(entry.get("yielded_results_count", 0) or 0),
+        "surfaced_jobs_count": int(entry.get("surfaced_jobs_count", 0) or 0),
+        "fallback_count": int(entry.get("fallback_count", 0) or 0),
+        "fallback_order": list(entry.get("fallback_order") or []),
+        "last_status": entry.get("last_status"),
+    }
 
 
 def annotate_source_matrix_with_truth(
@@ -992,7 +1015,10 @@ def annotate_source_matrix_with_truth(
 
     annotated_rows: list[DiscoverySourceMatrixRow] = []
     for item in source_matrix:
-        if item.source_key == "search_web":
+        observer_truth = _observer_source_truth(cycle_metrics, item.source_key)
+        if observer_truth is not None:
+            truth = observer_truth
+        elif item.source_key == "search_web":
             truth = _search_source_truth(cycle_metrics)
         else:
             truth = _rows_source_truth(rows_by_board_type.get(item.source_key, []))
@@ -1007,8 +1033,19 @@ def annotate_source_matrix_with_truth(
                     "run_count": truth["run_count"],
                     "failure_count": truth["failure_count"],
                     "zero_yield_count": truth["zero_yield_count"],
+                    "yielded_results_count": int(truth.get("yielded_results_count", 0) or 0),
                     "surfaced_jobs_count": truth["surfaced_jobs_count"],
-                    "summary": _format_source_truth_summary(**truth),
+                    "fallback_count": int(truth.get("fallback_count", 0) or 0),
+                    "fallback_order": list(truth.get("fallback_order") or []),
+                    "last_status": truth.get("last_status"),
+                    "summary": _format_source_truth_summary(
+                        run_count=truth["run_count"],
+                        failure_count=truth["failure_count"],
+                        zero_yield_count=truth["zero_yield_count"],
+                        yielded_results_count=int(truth.get("yielded_results_count", 0) or 0),
+                        surfaced_jobs_count=truth["surfaced_jobs_count"],
+                        fallback_count=int(truth.get("fallback_count", 0) or 0),
+                    ),
                 }
             )
         )
