@@ -1,23 +1,21 @@
 import { NavLink, Outlet } from "react-router-dom";
 
 const navigation = [
-  { to: "/jobs", label: "Jobs", detail: "Primary product path" },
-  { to: "/saved", label: "Saved", detail: "Intentional follow-up queue" },
-  { to: "/applied", label: "Applied", detail: "Application tracker" },
-  { to: "/profile", label: "Profile", detail: "Editable candidate profile" },
-  { to: "/validation-harness", label: "Validation Harness", detail: "Temporary Streamlit path" },
+  { to: "/jobs", label: "Jobs", detail: "Default shortlist" },
+  { to: "/saved", label: "Saved", detail: "Follow-up queue" },
+  { to: "/applied", label: "Applied", detail: "Tracker" },
+  { to: "/profile", label: "Profile", detail: "Candidate context" },
 ];
 
 export function AppShell() {
   return (
     <div className="app-shell">
       <aside className="sidebar">
-        <p className="eyebrow">JORB</p>
-        <h1>Production front end shell</h1>
-        <p className="sidebar-copy">
-          Product routes come first. Internal operator surfaces stay behind the API and Streamlit harness while the
-          production UI is bootstrapped.
-        </p>
+        <div className="sidebar-brand">
+          <p className="eyebrow">JORB</p>
+          <h1>Opportunity Scout</h1>
+          <p className="sidebar-copy">Jobs-first workbench for reviewing surfaced opportunities.</p>
+        </div>
         <nav className="nav-list" aria-label="Primary">
           {navigation.map((item) => (
             <NavLink
@@ -30,17 +28,20 @@ export function AppShell() {
             </NavLink>
           ))}
         </nav>
+        <div className="sidebar-status">
+          <p className="status-label">System Status</p>
+          <p className="status-copy">FastAPI-backed jobs feed. Operator-heavy surfaces stay out of the main nav.</p>
+          <div className="sidebar-links">
+            <a className="sidebar-link" href="http://127.0.0.1:8000/docs" target="_blank" rel="noreferrer">
+              API docs
+            </a>
+            <NavLink className="sidebar-link" to="/validation-harness">
+              Validation Harness
+            </NavLink>
+          </div>
+        </div>
       </aside>
       <main className="content">
-        <header className="frame-header">
-          <div>
-            <p className="eyebrow">Product-first routing</p>
-            <h2>Clay-like workbench shell for the JS app</h2>
-          </div>
-          <a className="ghost-link" href="http://127.0.0.1:8000/docs" target="_blank" rel="noreferrer">
-            FastAPI docs
-          </a>
-        </header>
         <Outlet />
       </main>
     </div>
