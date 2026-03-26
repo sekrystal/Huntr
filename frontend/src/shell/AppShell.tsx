@@ -32,6 +32,9 @@ export function AppShell() {
           <p className="status-label">System Status</p>
           <p className="status-copy">FastAPI-backed jobs feed. Operator-heavy surfaces stay out of the main nav.</p>
           <div className="sidebar-links">
+            <NavLink className="sidebar-link" to="/welcome">
+              Quick setup
+            </NavLink>
             <a className="sidebar-link" href="http://127.0.0.1:8000/docs" target="_blank" rel="noreferrer">
               API docs
             </a>

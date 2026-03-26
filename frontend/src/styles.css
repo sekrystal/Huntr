@@ -222,6 +222,11 @@ span {
   padding: 24px;
 }
 
+.onboarding-hero {
+  display: grid;
+  gap: 18px;
+}
+
 .frame-header {
   align-items: center;
   display: flex;
@@ -637,6 +642,42 @@ span {
 .detail-callout.is-neutral {
   background: rgba(18, 32, 51, 0.05);
   border: 1px solid rgba(18, 32, 51, 0.08);
+}
+
+.profile-form {
+  display: grid;
+  gap: 18px;
+  margin-top: 20px;
+}
+
+.profile-field {
+  display: grid;
+  gap: 8px;
+}
+
+.profile-field textarea,
+.profile-field select {
+  background: rgba(255, 255, 255, 0.62);
+  border: 1px solid rgba(18, 32, 51, 0.12);
+  border-radius: 18px;
+  color: var(--brand);
+  min-height: 56px;
+  padding: 14px 16px;
+  resize: vertical;
+}
+
+.profile-field small {
+  color: var(--ink-muted);
+}
+
+.profile-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.success-copy {
+  color: #2e6e47;
 }
 
 .detail-description {

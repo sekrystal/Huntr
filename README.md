@@ -533,9 +533,10 @@ npm run dev
 Production JS shell notes:
 
 - framework choice: Vite + React + TypeScript
-- primary product route: `http://127.0.0.1:5173/jobs`
+- first-run route: `http://127.0.0.1:5173/` opens a skippable lightweight setup, while `http://127.0.0.1:5173/jobs` remains directly reachable
 - dev API wiring: the Vite proxy forwards `/api/*` to `http://127.0.0.1:8000/*`
 - backend contract pattern: the JS client reads `/opportunities`, `/candidate-profile`, and `/applications/status`
+- profile UX: onboarding and `Profile` both edit lightweight search preferences for target roles, geography, and work mode without exposing operator-heavy internals
 - Streamlit remains the temporary validation harness for operator and diagnostic surfaces at `http://127.0.0.1:8500`
 - the JS shell intentionally does not expose `source matrix`, `discovery internals`, `learning`, `autonomy ops`, `agent activity`, `investigations`, `diagnostics`, or `operator controls` as product entry points
 

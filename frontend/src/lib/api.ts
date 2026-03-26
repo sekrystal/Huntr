@@ -39,13 +39,42 @@ export type Lead = {
   evidence_json: Record<string, unknown>;
 };
 
+export type CandidateProfilePayload = {
+  profile_schema_version: string;
+  name: string;
+  raw_resume_text: string;
+  extracted_summary_json: Record<string, unknown>;
+  preferred_titles_json: string[];
+  adjacent_titles_json: string[];
+  excluded_titles_json: string[];
+  preferred_domains_json: string[];
+  excluded_companies_json: string[];
+  preferred_locations_json: string[];
+  target_roles_json: string[];
+  work_mode_preference: string;
+  confirmed_skills_json: string[];
+  competencies_json: string[];
+  explicit_preferences_json: string[];
+  seniority_guess?: string | null;
+  stage_preferences_json: string[];
+  core_titles_json: string[];
+  excluded_keywords_json: string[];
+  min_seniority_band: string;
+  max_seniority_band: string;
+  stretch_role_families_json: string[];
+  minimum_fit_threshold: number;
+  structured_profile_json?: Record<string, unknown> | null;
+};
+
 export type CandidateProfile = {
-  target_titles: string[];
-  target_locations: string[];
-  preferred_domains: string[];
-  focus_keywords: string[];
-  excluded_keywords: string[];
+  name: string;
+  targetRoles: string[];
+  targetLocations: string[];
+  workModePreference: string;
+  preferredDomains: string[];
+  focusKeywords: string[];
   notes?: string | null;
+  raw: CandidateProfilePayload;
 };
 
 type LeadsResponse = {
@@ -81,8 +110,33 @@ export async function getLeads(params: Record<string, string | boolean | number 
   return payload.items;
 }
 
-export function getCandidateProfile(): Promise<CandidateProfile> {
-  return requestJson<CandidateProfile>("/candidate-profile");
+function toCandidateProfile(payload: CandidateProfilePayload): CandidateProfile {
+  const summary = payload.extracted_summary_json ?? {};
+  const summaryText = typeof summary.summary === "string" ? summary.summary : null;
+
+  return {
+    name: payload.name,
+    targetRoles: payload.target_roles_json ?? [],
+    targetLocations: payload.preferred_locations_json ?? [],
+    workModePreference: payload.work_mode_preference ?? "unspecified",
+    preferredDomains: payload.preferred_domains_json ?? [],
+    focusKeywords: payload.confirmed_skills_json?.length ? payload.confirmed_skills_json : payload.competencies_json ?? [],
+    notes: summaryText,
+    raw: payload,
+  };
+}
+
+export async function getCandidateProfile(): Promise<CandidateProfile> {
+  const payload = await requestJson<CandidateProfilePayload>("/candidate-profile");
+  return toCandidateProfile(payload);
+}
+
+export async function saveCandidateProfile(payload: CandidateProfilePayload): Promise<CandidateProfile> {
+  const saved = await requestJson<CandidateProfilePayload>("/candidate-profile", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+  return toCandidateProfile(saved);
 }
 
 export function setApplicationStatus(payload: {

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { getCandidateProfile, type CandidateProfile } from "../lib/api";
+import { ProfileEditor } from "./ProfileEditor";
 
 export function ProfilePage() {
   const [profile, setProfile] = useState<CandidateProfile | null>(null);
@@ -24,39 +25,54 @@ export function ProfilePage() {
   }, []);
 
   return (
-    <section className="panel">
-      <div className="panel-header">
-        <div>
-          <p className="eyebrow">Candidate profile</p>
-          <h3>Editable profile surface placeholder</h3>
-        </div>
-        <p className="panel-copy">
-          The shell already reads the current FastAPI profile payload. Resume upload and editing can layer onto this contract next.
-        </p>
-      </div>
+    <>
       {error ? <p className="state-copy error-copy">{error}</p> : null}
       {profile ? (
-        <div className="profile-grid">
-          <article>
-            <h4>Target titles</h4>
-            <p>{profile.target_titles.join(", ") || "No titles configured."}</p>
-          </article>
-          <article>
-            <h4>Target locations</h4>
-            <p>{profile.target_locations.join(", ") || "No locations configured."}</p>
-          </article>
-          <article>
-            <h4>Preferred domains</h4>
-            <p>{profile.preferred_domains.join(", ") || "No domains configured."}</p>
-          </article>
-          <article>
-            <h4>Focus keywords</h4>
-            <p>{profile.focus_keywords.join(", ") || "No focus keywords configured."}</p>
-          </article>
-        </div>
+        <>
+          <ProfileEditor
+            description="Keep setup light: set the roles, geography, and work mode that should shape search and ranking. Resume upload can still deepen the profile later."
+            eyebrow="Candidate profile"
+            onSaved={setProfile}
+            profile={profile}
+            submitLabel="Save profile preferences"
+            successMessage="Profile preferences updated for the shortlist."
+            title="Lightweight search preferences"
+          />
+          <section className="panel">
+            <div className="panel-header">
+              <div>
+                <p className="eyebrow">Current profile signals</p>
+                <h3>What search is using right now</h3>
+              </div>
+              <p className="panel-copy">
+                These values already feed the FastAPI profile payload and stay visible without surfacing internal diagnostics in the product shell.
+              </p>
+            </div>
+            <div className="profile-grid">
+              <article>
+                <h4>Target roles</h4>
+                <p>{profile.targetRoles.join(", ") || "No roles configured."}</p>
+              </article>
+              <article>
+                <h4>Preferred geography</h4>
+                <p>{profile.targetLocations.join(", ") || "No locations configured."}</p>
+              </article>
+              <article>
+                <h4>Work mode</h4>
+                <p>{profile.workModePreference || "No preference configured."}</p>
+              </article>
+              <article>
+                <h4>Preferred domains</h4>
+                <p>{profile.preferredDomains.join(", ") || "No domains configured."}</p>
+              </article>
+            </div>
+          </section>
+        </>
       ) : (
-        <p className="state-copy">Loading candidate profile from FastAPI.</p>
+        <section className="panel">
+          <p className="state-copy">Loading candidate profile from FastAPI.</p>
+        </section>
       )}
-    </section>
+    </>
   );
 }

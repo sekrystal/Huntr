@@ -148,6 +148,32 @@ def test_update_candidate_profile_syncs_structured_schema_back_to_flat_fields() 
     assert refreshed.explicit_preferences_json == ["small teams", "remote-friendly"]
 
 
+def test_update_candidate_profile_from_flat_targeting_fields_sets_explicit_search_preferences() -> None:
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(engine)
+    session = sessionmaker(bind=engine, expire_on_commit=False)()
+
+    payload = CandidateProfilePayload(
+        name="Lightweight Candidate",
+        target_roles_json=["founding operations lead", "strategic operations lead"],
+        preferred_locations_json=["remote us", "san francisco"],
+        work_mode_preference="remote",
+    )
+
+    profile = update_candidate_profile(session, payload)
+    refreshed = profile_to_payload(profile)
+    search_intent = profile.extracted_summary_json["structured_profile"]["search_intent"]
+
+    assert refreshed.target_roles_json == ["founding operations lead", "strategic operations lead"]
+    assert refreshed.preferred_locations_json == ["remote us", "san francisco"]
+    assert refreshed.work_mode_preference == "remote"
+    assert search_intent["applied_constraints"] == ["geography", "target_roles", "work_mode"]
+    assert search_intent["defaulted_constraints"] == []
+    assert search_intent["explicit_target_roles"] == ["founding operations lead", "strategic operations lead"]
+    assert search_intent["explicit_preferred_locations"] == ["remote us", "san francisco"]
+    assert search_intent["explicit_work_mode"] is True
+
+
 def test_text_resume_upload_extraction() -> None:
     text, warnings = extract_text_from_resume_upload("resume.txt", b"chief of staff\noperations\n")
     assert "chief of staff" in text
