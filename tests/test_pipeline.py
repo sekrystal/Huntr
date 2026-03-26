@@ -10,6 +10,7 @@ from core.config import Settings
 from core.schemas import LeadResponse
 from core.models import AgentActivity, Base, Lead, Listing
 from core.schemas import SyncResult
+from services.normalize import normalize_ashby_job, normalize_greenhouse_job, normalize_yc_job
 from services.discovery_agents import planner_agent
 from services.pipeline import ingest_user_job_link, recommendation_component_value, recommendation_score_value, run_scout_agent
 from services.profile import ingest_resume, update_candidate_profile
@@ -49,6 +50,54 @@ def test_run_scout_agent_adds_demo_batch_and_logs_activity() -> None:
     assert lead is not None
     assert "Freshness logic:" in (lead.explanation or "")
     assert (lead.evidence_json or {}).get("opportunity_intelligence", {}).get("freshness_label") == "fresh"
+
+
+def test_source_normalizers_map_into_shared_canonical_job_schema() -> None:
+    greenhouse_record = normalize_greenhouse_job(
+        {
+            "company_name": "Acme",
+            "title": "Founding Operator",
+            "absolute_url": "https://job-boards.greenhouse.io/acme/jobs/123",
+            "location": {"name": "Remote US"},
+            "content": "Build execution systems.",
+            "id": "123",
+        }
+    )
+    ashby_record = normalize_ashby_job(
+        {
+            "companyName": "Beta",
+            "title": "Chief of Staff",
+            "jobUrl": "https://jobs.ashbyhq.com/beta/456",
+            "location": {},
+            "descriptionPlain": "Drive company priorities.",
+            "id": "456",
+        }
+    )
+    yc_record = normalize_yc_job(
+        {
+            "company_name": "Gamma",
+            "title": "Business Operations Lead",
+            "url": "https://www.workatastartup.com/jobs/789",
+            "location": "",
+            "description_text": "Run operating cadence.",
+            "source_job_id": "789",
+        }
+    )
+
+    for record, expected_source, expected_location in [
+        (greenhouse_record, "greenhouse", "Remote US"),
+        (ashby_record, "ashby", "Unspecified"),
+        (yc_record, "yc_jobs", "Unspecified"),
+    ]:
+        assert record.canonical_job is not None
+        assert record.canonical_job.schema_version == "v1"
+        assert record.canonical_job.url == record.url
+        assert record.canonical_job.company == record.company_name
+        assert record.canonical_job.title == record.title
+        assert record.canonical_job.location == expected_location
+        assert record.canonical_job.source_type == expected_source
+        assert record.location == expected_location
+        assert (record.metadata_json or {})["canonical_job"] == record.canonical_job.model_dump()
 
 
 def test_lead_response_normalizes_recommendation_score_schema_with_traceable_components() -> None:
@@ -329,6 +378,14 @@ def test_ingest_user_job_link_routes_manual_submission_through_listing_pipeline(
     assert lead.last_agent_action == "Scout: ingested user-submitted link"
     assert lead.score_breakdown_json["source_quality"] == 1.2
     assert "Freshness logic:" in (lead.explanation or "")
+    assert (listing.metadata_json or {})["canonical_job"] == {
+        "schema_version": "v1",
+        "url": "https://boards.greenhouse.io/ramp/jobs/9999",
+        "company": "Ramp",
+        "title": "Strategic Programs Lead",
+        "location": "New York, NY",
+        "source_type": "greenhouse",
+    }
 
 
 def test_ingest_user_job_link_marks_yc_jobs_submission_with_source_lineage() -> None:

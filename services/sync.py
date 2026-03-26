@@ -212,7 +212,7 @@ def _upsert_signal(session: Session, record: SignalRecord) -> Signal:
 
 def _upsert_listing(session: Session, record: ListingRecord, company_id: Optional[int]) -> tuple[Listing, bool]:
     existing = session.scalar(select(Listing).where(Listing.url == record.url))
-    payload = record.model_dump()
+    payload = record.model_dump(exclude={"canonical_job"})
     payload["company_id"] = company_id
     metadata = dict(payload.get("metadata_json") or {})
     if payload.get("company_domain"):

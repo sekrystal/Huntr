@@ -345,6 +345,15 @@ class SignalRecord(BaseModel):
     metadata_json: dict[str, Any] = Field(default_factory=dict)
 
 
+class CanonicalJobRecord(BaseModel):
+    schema_version: str = "v1"
+    url: str
+    company: str
+    title: str
+    location: str
+    source_type: str
+
+
 class ListingRecord(BaseModel):
     company_name: str
     company_domain: Optional[str] = None
@@ -364,6 +373,28 @@ class ListingRecord(BaseModel):
     freshness_hours: Optional[float] = None
     freshness_days: Optional[int] = None
     metadata_json: dict[str, Any] = Field(default_factory=dict)
+    canonical_job: Optional[CanonicalJobRecord] = None
+
+    @model_validator(mode="after")
+    def normalize_canonical_job_schema(self) -> "ListingRecord":
+        self.company_name = str(self.company_name or "").strip() or "Unknown Company"
+        self.title = str(self.title or "").strip() or "Untitled Role"
+        self.url = str(self.url or "").strip()
+        self.source_type = str(self.source_type or "").strip() or "unknown"
+        self.location = str(self.location or "").strip() or "Unspecified"
+        self.metadata_json = dict(self.metadata_json or {})
+        if not self.url:
+            raise ValueError("ListingRecord.url is required")
+
+        self.canonical_job = CanonicalJobRecord(
+            url=self.url,
+            company=self.company_name,
+            title=self.title,
+            location=self.location,
+            source_type=self.source_type,
+        )
+        self.metadata_json["canonical_job"] = self.canonical_job.model_dump()
+        return self
 
 
 class CandidateProfilePayload(BaseModel):
