@@ -264,30 +264,50 @@ def test_discovery_source_matrix_frame_exposes_truth_columns() -> None:
                 "label": "Greenhouse",
                 "classification": "working",
                 "runtime_state": "live_enabled",
+                "ran": True,
+                "failed": False,
+                "zero_yield": False,
+                "run_count": 2,
+                "failure_count": 0,
+                "zero_yield_count": 0,
+                "surfaced_jobs_count": 3,
                 "toggle_key": "GREENHOUSE_ENABLED + GREENHOUSE_BOARD_TOKENS",
                 "runtime_enabled": True,
                 "strict_live_enabled": True,
                 "trusted_for_output": True,
                 "blocked_reason": None,
                 "reason": "Configured boards are polled directly.",
+                "summary": "ran 2 times; 3 surfaced jobs",
             },
             {
                 "source_key": "search_web",
                 "label": "Search Web",
                 "classification": "partially_working",
                 "runtime_state": "live_enabled",
+                "ran": True,
+                "failed": False,
+                "zero_yield": True,
+                "run_count": 1,
+                "failure_count": 0,
+                "zero_yield_count": 1,
+                "surfaced_jobs_count": 0,
                 "toggle_key": "SEARCH_DISCOVERY_ENABLED",
                 "runtime_enabled": True,
                 "strict_live_enabled": True,
                 "trusted_for_output": False,
                 "blocked_reason": "cooldown",
                 "reason": "Search is recall expansion only.",
+                "summary": "ran 1 time; 1 zero-yield run",
             },
         ]
     )
 
     assert frame["source"].tolist() == ["Greenhouse", "Search Web"]
     assert frame["classification"].tolist() == ["working", "partially working"]
+    assert frame["ran"].tolist() == ["yes", "yes"]
+    assert frame["zero_yield"].tolist() == ["no", "yes"]
+    assert frame["run_count"].tolist() == [2, 1]
+    assert frame["surfaced_jobs"].tolist() == [3, 0]
     assert frame["runtime_enabled"].tolist() == ["yes", "yes"]
     assert frame["trusted_for_output"].tolist() == ["yes", "no"]
     assert frame["blocked_reason"].tolist() == ["", "cooldown"]

@@ -913,11 +913,112 @@ def build_discovery_source_matrix(
     return rows
 
 
+def _search_source_truth(cycle_metrics: dict[str, object]) -> dict[str, int]:
+    diagnostics = dict(cycle_metrics.get("search_fetch_diagnostics") or {})
+    accepted_results_count = int(cycle_metrics.get("accepted_results_count", 0) or 0)
+    dropped_result_count = int(cycle_metrics.get("dropped_result_count", 0) or 0)
+    search_ran = (
+        (bool(diagnostics) and diagnostics.get("status") != "not_run")
+        or accepted_results_count > 0
+        or dropped_result_count > 0
+    )
+    search_failed = diagnostics.get("status") == "failed"
+    search_zero_yield = diagnostics.get("status") == "empty" or bool(cycle_metrics.get("search_zero_yield"))
+    return {
+        "run_count": 1 if search_ran else 0,
+        "failure_count": 1 if search_failed else 0,
+        "zero_yield_count": 1 if search_zero_yield else 0,
+        "surfaced_jobs_count": int(cycle_metrics.get("agent_discovered_visible_leads_count", 0) or 0),
+    }
+
+
+def _row_failed(row: CompanyDiscovery) -> bool:
+    diagnostics = dict((row.metadata_json or {}).get("expansion_diagnostics") or {})
+    failure_boundary = diagnostics.get("failure_boundary")
+    return bool(failure_boundary and failure_boundary not in {"connector_yield", "empty_discovered_surface", "scrape_parse_yield"})
+
+
+def _rows_source_truth(rows: list[CompanyDiscovery]) -> dict[str, int]:
+    attempted_rows = [
+        row
+        for row in rows
+        if row.last_expanded_at is not None
+        or int(row.last_expansion_result_count or 0) > 0
+        or int(row.visible_yield_count or 0) > 0
+        or int(row.expansion_attempts or 0) > 0
+    ]
+    return {
+        "run_count": len(attempted_rows),
+        "failure_count": sum(1 for row in attempted_rows if _row_failed(row)),
+        "zero_yield_count": sum(1 for row in attempted_rows if row.last_expansion_result_count == 0),
+        "surfaced_jobs_count": sum(int(row.visible_yield_count or 0) for row in attempted_rows),
+    }
+
+
+def _format_source_truth_summary(
+    *,
+    run_count: int,
+    failure_count: int,
+    zero_yield_count: int,
+    surfaced_jobs_count: int,
+) -> str:
+    if run_count == 0 and failure_count == 0 and zero_yield_count == 0 and surfaced_jobs_count == 0:
+        return "No observed discovery runs or surfaced jobs yet."
+
+    parts = [f"ran {run_count} time{'s' if run_count != 1 else ''}"] if run_count > 0 else []
+    if failure_count > 0:
+        parts.append(f"{failure_count} failure{'s' if failure_count != 1 else ''}")
+    if zero_yield_count > 0:
+        parts.append(f"{zero_yield_count} zero-yield run{'s' if zero_yield_count != 1 else ''}")
+    if surfaced_jobs_count > 0:
+        parts.append(f"{surfaced_jobs_count} surfaced job{'s' if surfaced_jobs_count != 1 else ''}")
+    return "; ".join(parts) if parts else "No observed discovery runs or surfaced jobs yet."
+
+
+def annotate_source_matrix_with_truth(
+    source_matrix: list[DiscoverySourceMatrixRow],
+    *,
+    cycle_metrics: dict[str, object] | None = None,
+    discovery_rows: list[CompanyDiscovery] | None = None,
+) -> list[DiscoverySourceMatrixRow]:
+    cycle_metrics = dict(cycle_metrics or {})
+    discovery_rows = list(discovery_rows or [])
+    rows_by_board_type = {
+        "greenhouse": [row for row in discovery_rows if row.board_type == "greenhouse"],
+        "ashby": [row for row in discovery_rows if row.board_type == "ashby"],
+        "yc_jobs": [row for row in discovery_rows if row.board_type == "yc_jobs"],
+        "search_web_scrape_fallback": [row for row in discovery_rows if row.board_type == "careers_page"],
+    }
+
+    annotated_rows: list[DiscoverySourceMatrixRow] = []
+    for item in source_matrix:
+        if item.source_key == "search_web":
+            truth = _search_source_truth(cycle_metrics)
+        else:
+            truth = _rows_source_truth(rows_by_board_type.get(item.source_key, []))
+
+        failed = truth["failure_count"] > 0 or (item.connector_status or "") in {"failed", "circuit_open"}
+        annotated_rows.append(
+            item.model_copy(
+                update={
+                    "ran": truth["run_count"] > 0,
+                    "failed": failed,
+                    "zero_yield": truth["zero_yield_count"] > 0,
+                    "run_count": truth["run_count"],
+                    "failure_count": truth["failure_count"],
+                    "zero_yield_count": truth["zero_yield_count"],
+                    "surfaced_jobs_count": truth["surfaced_jobs_count"],
+                    "summary": _format_source_truth_summary(**truth),
+                }
+            )
+        )
+    return annotated_rows
+
+
 def build_discovery_status(session: Session) -> DiscoveryStatusResponse:
     from services.discovery_agents import recent_discovery_agent_runs, summarize_expansion_actions
 
     since = datetime.utcnow() - timedelta(hours=24)
-    source_matrix = build_discovery_source_matrix(session)
     recent_runs = recent_discovery_agent_runs(session)
     rows = session.scalars(
         select(CompanyDiscovery)
@@ -967,6 +1068,12 @@ def build_discovery_status(session: Session) -> DiscoveryStatusResponse:
         session,
         agent_name="Discovery",
         action="recorded discovery cycle metrics",
+    )
+    cycle_metrics = dict((latest_metrics_run or {}).get("metadata_json", {}).get("cycle_metrics", {}))
+    source_matrix = annotate_source_matrix_with_truth(
+        build_discovery_source_matrix(session),
+        cycle_metrics=cycle_metrics,
+        discovery_rows=rows,
     )
     geography_rejections = session.scalars(
         select(Lead)
@@ -1054,7 +1161,7 @@ def build_discovery_status(session: Session) -> DiscoveryStatusResponse:
             "triage": bool((triage_run or {}).get("metadata_json", {}).get("used_openai")),
             "learning": bool((learning_run or {}).get("metadata_json", {}).get("used_openai")),
         },
-        cycle_metrics=dict((latest_metrics_run or {}).get("metadata_json", {}).get("cycle_metrics", {})),
+        cycle_metrics=cycle_metrics,
         recent_items=[_company_discovery_row_response(row) for row in rows],
     )
 

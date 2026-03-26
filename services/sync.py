@@ -28,6 +28,7 @@ from core.schemas import ListingRecord, LeadResponse, SignalRecord, StatsRespons
 from services.activity import append_lead_agent_trace, log_agent_activity, log_agent_run
 from services.ai_judges import judge_critic_with_ai, judge_fit_with_ai
 from services.company_discovery import (
+    annotate_source_matrix_with_truth,
     build_discovery_source_matrix,
     build_query_inputs,
     candidate_from_search_result,
@@ -1945,12 +1946,19 @@ def sync_all(
     )
     session.flush()
     surfaced_count = session.scalar(select(func.count(Lead.id)).where(Lead.hidden.is_(False))) or 0
-    source_matrix = [row.model_dump() for row in build_discovery_source_matrix(
-        session,
-        settings=settings,
-        enabled_connectors=enabled_connectors,
-        strict_live_connectors=strict_live_connectors,
-    )]
+    source_matrix = [
+        row.model_dump()
+        for row in annotate_source_matrix_with_truth(
+            build_discovery_source_matrix(
+                session,
+                settings=settings,
+                enabled_connectors=enabled_connectors,
+                strict_live_connectors=strict_live_connectors,
+            ),
+            cycle_metrics=dict(cycle_metrics),
+            discovery_rows=list(selected_discovery_rows_by_key.values()),
+        )
+    ]
     unavailable_automatic_sources = [
         row["label"]
         for row in source_matrix

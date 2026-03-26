@@ -286,6 +286,13 @@ def test_discovery_status_returns_recent_items() -> None:
     assert status.cycle_metrics["accepted_urls_sample"] == ["https://job-boards.greenhouse.io/example"]
     assert status.cycle_metrics["query_family_metrics"]["company_targeted"]["queries_attempted"] == 1
     assert status.cycle_metrics["query_family_metrics"]["company_targeted"]["selected_for_expansion"] == 1
+    source_truth = {item.source_key: item for item in status.source_matrix}
+    assert source_truth["search_web"].ran is False
+    assert source_truth["search_web"].surfaced_jobs_count == 1
+    assert source_truth["greenhouse"].run_count == 1
+    assert source_truth["greenhouse"].surfaced_jobs_count == 2
+    assert source_truth["greenhouse"].zero_yield is False
+    assert source_truth["ashby"].surfaced_jobs_count == 0
     assert status.recent_successful_expansions
     recent_example = next(item for item in status.recent_items if item.company_name == row.company_name)
     assert recent_example.metadata_json["discovery_lineage"]["surface"]["source_lineage"] == "greenhouse"

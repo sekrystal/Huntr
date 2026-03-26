@@ -339,12 +339,20 @@ def discovery_source_matrix_frame(source_matrix: list[dict[str, Any]]) -> pd.Dat
                 "source": item.get("label") or item.get("source_key"),
                 "classification": (item.get("classification") or "").replace("_", " "),
                 "runtime_state": (item.get("runtime_state") or "").replace("_", " "),
+                "ran": "yes" if item.get("ran") else "no",
+                "failed": "yes" if item.get("failed") else "no",
+                "zero_yield": "yes" if item.get("zero_yield") else "no",
+                "run_count": int(item.get("run_count") or 0),
+                "failure_count": int(item.get("failure_count") or 0),
+                "zero_yield_count": int(item.get("zero_yield_count") or 0),
+                "surfaced_jobs": int(item.get("surfaced_jobs_count") or 0),
                 "toggle": item.get("toggle_key") or "",
                 "runtime_enabled": "yes" if item.get("runtime_enabled") else "no",
                 "strict_live": "yes" if item.get("strict_live_enabled") else "no",
                 "trusted_for_output": "yes" if item.get("trusted_for_output") else "no",
                 "blocked_reason": item.get("blocked_reason") or "",
                 "reason": item.get("reason") or "",
+                "summary": item.get("summary") or "",
             }
         )
     return pd.DataFrame(rows)

@@ -796,6 +796,14 @@ class DiscoverySourceMatrixRow(BaseModel):
     connector_status: Optional[str] = None
     last_mode: Optional[str] = None
     last_error: Optional[str] = None
+    ran: bool = False
+    failed: bool = False
+    zero_yield: bool = False
+    run_count: int = 0
+    failure_count: int = 0
+    zero_yield_count: int = 0
+    surfaced_jobs_count: int = 0
+    summary: Optional[str] = None
 
 
 class DiscoveryStatusResponse(BaseModel):
