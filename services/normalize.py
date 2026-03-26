@@ -87,3 +87,38 @@ def normalize_ashby_job(job: dict, org_name: Optional[str] = None) -> ListingRec
             "location_reason": location_classification["reason"],
         },
     )
+
+
+def normalize_yc_job(job: dict) -> ListingRecord:
+    location = job.get("location")
+    location_classification = classify_location_scope(location)
+    posted_at = _parse_datetime(job.get("posted_at"))
+
+    return ListingRecord(
+        company_name=job.get("company_name") or "Unknown Company",
+        company_domain=job.get("company_domain"),
+        careers_url=job.get("source_url") or job.get("url"),
+        title=(job.get("title") or "").strip(),
+        location=location,
+        url=job.get("url"),
+        source_type="yc_jobs",
+        posted_at=posted_at,
+        first_published_at=posted_at,
+        last_seen_at=datetime.now(timezone.utc),
+        description_text=job.get("description_text"),
+        metadata_json={
+            "provider": "yc_jobs",
+            "page_text": job.get("description_text", ""),
+            "source_queries": job.get("source_queries", []),
+            "discovery_source": job.get("discovery_source"),
+            "surface_provenance": job.get("surface_provenance"),
+            "source_lineage": job.get("source_lineage"),
+            "company_domain": job.get("company_domain"),
+            "source_job_id": job.get("source_job_id"),
+            "internal_job_id": job.get("source_job_id"),
+            "apply_url": job.get("apply_url"),
+            "source_url": job.get("source_url"),
+            "location_scope": location_classification["scope"],
+            "location_reason": location_classification["reason"],
+        },
+    )

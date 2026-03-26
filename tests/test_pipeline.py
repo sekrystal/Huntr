@@ -5,6 +5,8 @@ from datetime import datetime, timezone
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+from connectors.search_web import SearchDiscoveryResult
+from core.config import Settings
 from core.schemas import LeadResponse
 from core.models import AgentActivity, Base, Lead, Listing
 from core.schemas import SyncResult
@@ -324,3 +326,124 @@ def test_ingest_user_job_link_routes_manual_submission_through_listing_pipeline(
     assert lead.last_agent_action == "Scout: ingested user-submitted link"
     assert lead.score_breakdown_json["source_quality"] == 1.2
     assert "Freshness logic:" in (lead.explanation or "")
+
+
+def test_ingest_user_job_link_marks_yc_jobs_submission_with_source_lineage() -> None:
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(engine)
+    session = sessionmaker(bind=engine, expire_on_commit=False)()
+
+    ingest_resume(
+        session,
+        filename="resume.txt",
+        raw_text="Operator with chief of staff and strategic programs experience in AI companies.",
+    )
+
+    result = ingest_user_job_link(
+        session,
+        job_url="https://www.workatastartup.com/jobs/12345",
+        company_name="Acme",
+        title="Founding Operations Lead",
+        location="San Francisco, CA",
+        description_text="Lead recruiting systems, founder operations, and executive cadence.",
+        posted_at=datetime.now(timezone.utc),
+    )
+    session.commit()
+
+    listing = session.get(Listing, result["listing_id"])
+    lead = session.get(Lead, result["lead_id"])
+
+    assert listing is not None
+    assert lead is not None
+    assert listing.source_type == "yc_jobs"
+    assert (listing.metadata_json or {})["source_lineage"] == "yc_jobs+user_submitted"
+    assert (lead.evidence_json or {})["source_lineage"] == "yc_jobs+user_submitted"
+    assert lead.score_breakdown_json["source_quality"] == 0.9
+
+
+def test_sync_all_surfaces_yc_jobs_listing_from_search_discovery(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(engine)
+    session = sessionmaker(bind=engine, expire_on_commit=False)()
+
+    ingest_resume(
+        session,
+        filename="resume.txt",
+        raw_text="Operator with chief of staff and founding operations experience.",
+    )
+
+    settings = Settings(
+        demo_mode=True,
+        search_discovery_enabled=True,
+        discovery_max_search_queries_per_cycle=4,
+        discovery_max_expansions_per_cycle=4,
+        discovery_max_new_companies_per_cycle=4,
+        openai_enabled=False,
+    )
+
+    monkeypatch.setattr("services.sync.get_settings", lambda: settings)
+    monkeypatch.setattr(
+        "services.sync.SearchDiscoveryConnector.fetch",
+        lambda self, queries, require_live=False: (
+            [
+                SearchDiscoveryResult(
+                    query_text=queries[0],
+                    title="Founding Operations Lead at Acme | Work at a Startup",
+                    url="https://www.workatastartup.com/jobs/12345",
+                    source_surface="search_web",
+                    query_family="role_market",
+                )
+            ],
+            True,
+        ),
+    )
+    monkeypatch.setattr("services.sync.GreenhouseConnector.fetch", lambda self, *_args, **_kwargs: ([], False))
+    monkeypatch.setattr("services.sync.AshbyConnector.fetch", lambda self, *_args, **_kwargs: ([], False))
+    monkeypatch.setattr("services.sync.XSearchConnector.fetch", lambda self, *_args, **_kwargs: ([], False))
+    monkeypatch.setattr(
+        "services.sync.fetch_page_snapshot",
+        lambda _url: (
+            "https://www.workatastartup.com/jobs/12345",
+            """
+            <html>
+              <head>
+                <title>Founding Operations Lead at Acme | Work at a Startup</title>
+                <script type="application/ld+json">
+                  {
+                    "@context": "https://schema.org",
+                    "@type": "JobPosting",
+                    "title": "Founding Operations Lead",
+                    "datePosted": "2026-03-20T00:00:00Z",
+                    "description": "<p>Lead operating cadence and recruiting systems.</p>",
+                    "identifier": {"@type": "PropertyValue", "value": "12345"},
+                    "hiringOrganization": {"@type": "Organization", "name": "Acme"},
+                    "jobLocation": {
+                      "@type": "Place",
+                      "address": {
+                        "@type": "PostalAddress",
+                        "addressLocality": "San Francisco",
+                        "addressRegion": "CA",
+                        "addressCountry": "US"
+                      }
+                    },
+                    "url": "https://www.workatastartup.com/jobs/12345"
+                  }
+                </script>
+              </head>
+            </html>
+            """,
+        ),
+    )
+
+    result = sync_all(session, include_rechecks=False, enabled_connectors={"search_web"})
+    session.commit()
+
+    listing = session.query(Listing).filter(Listing.source_type == "yc_jobs").one()
+    lead = session.query(Lead).filter(Lead.listing_id == listing.id).one()
+
+    assert result.discovery_metrics["yc_jobs"]["verified"] == 1
+    assert listing.company_name == "Acme"
+    assert listing.title == "Founding Operations Lead"
+    assert listing.listing_status == "active"
+    assert (listing.metadata_json or {})["source_lineage"] == "yc_jobs+search_web"
+    assert (lead.evidence_json or {})["source_lineage"] == "yc_jobs+search_web"

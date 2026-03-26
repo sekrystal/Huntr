@@ -6,6 +6,7 @@ from time import perf_counter
 from collections import defaultdict
 from collections import Counter
 from typing import Optional
+from urllib.parse import urlparse
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -16,6 +17,8 @@ from connectors.search_web import (
     SearchDiscoveryConnector,
     build_search_queries,
     classify_query_family,
+    extract_direct_listing_from_html,
+    fetch_page_snapshot,
 )
 from connectors.x_search import XSearchConnector
 from core.config import get_settings
@@ -47,7 +50,7 @@ from services.freshness import classify_freshness_label, has_expired_pattern, va
 from services.investigations import mark_investigation_attempt, upsert_investigation
 from services.learning import generate_follow_up_tasks, increment_query_stat
 from services.location_policy import classify_location_scope, is_location_allowed_for_profile
-from services.normalize import normalize_ashby_job, normalize_greenhouse_job
+from services.normalize import normalize_ashby_job, normalize_greenhouse_job, normalize_yc_job
 from services.profile import get_candidate_profile
 from services.query_learning import ensure_source_queries
 from services.ranking import infer_role_family, score_lead
@@ -169,7 +172,7 @@ def _verify_listing_record(record: ListingRecord) -> bool:
     if not external_id:
         return False
     lowered_url = record.url.lower()
-    if "greenhouse.io" not in lowered_url and "ashbyhq.com" not in lowered_url:
+    if "greenhouse.io" not in lowered_url and "ashbyhq.com" not in lowered_url and "workatastartup.com" not in lowered_url:
         return False
     return True
 
@@ -819,6 +822,7 @@ def sync_all(
 
     greenhouse_jobs: list[dict] = []
     ashby_jobs: list[dict] = []
+    yc_jobs: list[dict] = []
     search_results = []
     x_raw_signals: list[dict] = []
     greenhouse_live = False
@@ -827,6 +831,7 @@ def sync_all(
     x_live = False
     discovered_greenhouse_queries: dict[str, list[str]] = {}
     discovered_ashby_queries: dict[str, list[str]] = {}
+    discovered_yc_jobs: dict[str, dict[str, object]] = {}
     discovery_metrics: dict[str, dict[str, int]] = {}
     discovery_status: dict[str, object] = {}
     cycle_metrics: Counter[str] = Counter()
@@ -1186,6 +1191,19 @@ def sync_all(
             for candidate, _, _, _ in selected_discoveries
             if candidate.board_type == "ashby"
         }
+        discovered_yc_jobs = {
+            candidate.discovery_key: {
+                "result_url": candidate.result_url,
+                "query_text": candidate.discovery_query,
+                "discovery_source": candidate.discovery_source,
+                "surface_provenance": (row.metadata_json or {}).get("surface_provenance"),
+                "source_lineage": (row.metadata_json or {}).get("source_lineage"),
+                "company_name": candidate.company_name,
+                "board_locator": candidate.board_locator,
+            }
+            for candidate, row, _, _ in selected_discoveries
+            if candidate.board_type == "yc_jobs"
+        }
         logger.info("[ASHBY_DISCOVERY] %s", {"orgs": list(discovered_ashby_queries), "count": len(discovered_ashby_queries)})
         logger.info(
             "[DISCOVERED_COMPANIES] %s",
@@ -1308,9 +1326,61 @@ def sync_all(
             ),
             date_fields=["publishedDate"],
         )
+    for discovery_key, payload in discovered_yc_jobs.items():
+        try:
+            final_url, html = fetch_page_snapshot(str(payload["result_url"]))
+            direct_job = extract_direct_listing_from_html(str(payload["result_url"]), html, final_url=final_url)
+        except Exception as exc:
+            logger.info(
+                "[YC_JOB_DISCOVERY] %s",
+                {
+                    "url": payload["result_url"],
+                    "status": "fetch_failed",
+                    "error": str(exc),
+                },
+            )
+            continue
+        if not direct_job:
+            logger.info(
+                "[YC_JOB_DISCOVERY] %s",
+                {
+                    "url": payload["result_url"],
+                    "status": "unparseable",
+                },
+            )
+            continue
+        yc_jobs.append(
+            {
+                "company_name": direct_job.company_name or payload["company_name"],
+                "company_domain": (urlparse(direct_job.final_url).hostname or "").lower() or None,
+                "title": direct_job.title,
+                "location": direct_job.location,
+                "url": direct_job.final_url,
+                "apply_url": direct_job.apply_url,
+                "posted_at": direct_job.posted_at,
+                "description_text": direct_job.description_text,
+                "source_job_id": payload["board_locator"],
+                "source_url": payload["result_url"],
+                "source_queries": [payload["query_text"]],
+                "discovery_source": payload["discovery_source"],
+                "surface_provenance": payload["surface_provenance"],
+                "source_lineage": payload["source_lineage"],
+            }
+        )
+        logger.info(
+            "[YC_JOB_DISCOVERY] %s",
+            {
+                "url": payload["result_url"],
+                "status": "normalized",
+                "job_id": direct_job.job_id,
+                "company_name": direct_job.company_name,
+                "title": direct_job.title,
+            },
+        )
     greenhouse_job_counts = dict(getattr(greenhouse_connector, "last_board_counts", {}) or {})
     ashby_job_counts = Counter(job.get("source_org_key") for job in ashby_jobs if job.get("source_org_key"))
     ashby_org_statuses = dict(getattr(ashby_connector, "last_org_statuses", {}) or {})
+    yc_job_keys = {f"yc_jobs:{job.get('source_job_id')}" for job in yc_jobs if job.get("source_job_id")}
     configured_greenhouse_tokens = {token.lower() for token in settings.greenhouse_tokens}
     configured_ashby_orgs = {org.lower() for org in settings.ashby_orgs}
     for job in greenhouse_jobs:
@@ -1332,11 +1402,14 @@ def sync_all(
         job["surface_provenance"] = provenance
         job["source_lineage"] = source_lineage_for_surface("ashby", provenance, job.get("discovery_source"))
     for candidate, row, score, reasons in selected_discoveries:
-        result_count = (
-            greenhouse_job_counts.get(candidate.board_locator, 0)
-            if candidate.board_type == "greenhouse"
-            else int(ashby_job_counts.get(candidate.board_locator, 0))
-        )
+        if candidate.board_type == "greenhouse":
+            result_count = greenhouse_job_counts.get(candidate.board_locator, 0)
+        elif candidate.board_type == "ashby":
+            result_count = int(ashby_job_counts.get(candidate.board_locator, 0))
+        elif candidate.board_type == "yc_jobs":
+            result_count = 1 if candidate.discovery_key in yc_job_keys else 0
+        else:
+            result_count = 0
         blocked_reason = "investigate" if candidate.board_type == "careers_page" else None
         record_expansion_attempt(row, result_count=result_count, blocked_reason=blocked_reason)
         expansion_diagnostics = {
@@ -1368,6 +1441,10 @@ def sync_all(
                 expansion_diagnostics["failure_boundary"] = "empty_discovered_surface"
         elif candidate.board_type == "greenhouse":
             expansion_diagnostics["surface_status"] = "jobs_returned" if result_count > 0 else "empty_jobs"
+        elif candidate.board_type == "yc_jobs":
+            expansion_diagnostics["surface_status"] = "direct_job_normalized" if result_count > 0 else "direct_job_unparseable"
+            if result_count == 0:
+                expansion_diagnostics["failure_boundary"] = "direct_listing_parse"
         elif candidate.board_type == "careers_page":
             expansion_diagnostics["surface_status"] = "no_usable_jobs_found"
             if result_count == 0:
@@ -1493,6 +1570,29 @@ def sync_all(
         len(ashby_verified),
     )
 
+    yc_jobs_normalized = [normalize_yc_job(job) for job in yc_jobs]
+    yc_jobs_verified = [validate_listing(record) for record in yc_jobs_normalized if _verify_listing_record(record)]
+    cycle_metrics["agent_discovered_listings_count"] += sum(
+        1
+        for record in yc_jobs_normalized
+        if (record.metadata_json or {}).get("surface_provenance") in {"discovered_existing", "discovered_new"}
+    )
+    cycle_metrics["agent_discovered_verified_listings_count"] += sum(
+        1
+        for record in yc_jobs_verified
+        if (record.metadata_json or {}).get("surface_provenance") in {"discovered_existing", "discovered_new"}
+    )
+    discovery_metrics["yc_jobs"] = {
+        "raw": len(yc_jobs),
+        "normalized": len(yc_jobs_normalized),
+        "verified": len(yc_jobs_verified),
+    }
+    logger.info(
+        "[VERIFICATION] connector=yc_jobs before=%s after=%s",
+        len(yc_jobs_normalized),
+        len(yc_jobs_verified),
+    )
+
     signals_ingested = 0
     listings_ingested = 0
     leads_created = 0
@@ -1524,6 +1624,7 @@ def sync_all(
 
     listing_records = list(greenhouse_verified)
     listing_records.extend(ashby_verified)
+    listing_records.extend(yc_jobs_verified)
 
     listing_objects: list[Listing] = []
     for record in listing_records:
@@ -1585,6 +1686,8 @@ def sync_all(
                     discovery_key = f"greenhouse:{matching_listing.metadata_json['source_board_token']}"
                 elif matching_listing.source_type == "ashby" and (matching_listing.metadata_json or {}).get("source_org_key"):
                     discovery_key = f"ashby:{matching_listing.metadata_json['source_org_key']}"
+                elif matching_listing.source_type == "yc_jobs" and (matching_listing.metadata_json or {}).get("source_job_id"):
+                    discovery_key = f"yc_jobs:{matching_listing.metadata_json['source_job_id']}"
                 if discovery_key:
                     discovery_yield_counts[discovery_key]["visible" if not lead.hidden else "suppressed"] += 1
                     if (lead.evidence_json or {}).get("suppression_category") == "location":
@@ -1712,6 +1815,8 @@ def sync_all(
                 discovery_key = f"greenhouse:{listing.metadata_json['source_board_token']}"
             elif listing.source_type == "ashby" and (listing.metadata_json or {}).get("source_org_key"):
                 discovery_key = f"ashby:{listing.metadata_json['source_org_key']}"
+            elif listing.source_type == "yc_jobs" and (listing.metadata_json or {}).get("source_job_id"):
+                discovery_key = f"yc_jobs:{listing.metadata_json['source_job_id']}"
             if discovery_key:
                 discovery_yield_counts[discovery_key]["visible" if not lead.hidden else "suppressed"] += 1
                 if (lead.evidence_json or {}).get("suppression_category") == "location":

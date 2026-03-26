@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import requests
 
 from connectors.search_web import (
+    DirectJobExtractionResult,
     SearchDiscoveryConnector,
     SearchDiscoveryResult,
     _extract_result_url,
@@ -16,6 +17,7 @@ from connectors.search_web import (
     classify_temporal_intelligence,
     classify_query_family,
     derive_search_results_from_extraction,
+    extract_direct_listing_from_html,
     extract_ats_identifiers_from_html,
 )
 
@@ -95,8 +97,54 @@ def test_supported_job_surface_accepts_careers_variants_and_blocks_aggregators()
     assert _is_supported_job_surface("https://boards.greenhouse.io/acme")
     assert _is_supported_job_surface("https://job-boards.greenhouse.io/acme/jobs/123")
     assert _is_supported_job_surface("https://jobs.ashbyhq.com/acme")
+    assert _is_supported_job_surface("https://www.workatastartup.com/jobs/12345")
     assert not _is_supported_job_surface("https://www.linkedin.com/jobs/view/1")
     assert not _is_supported_job_surface("https://www.indeed.com/viewjob?jk=123")
+
+
+def test_extract_direct_listing_from_yc_jobs_html() -> None:
+    html = """
+    <html>
+      <head>
+        <title>Founding Operations Lead at Acme | Work at a Startup</title>
+        <script type="application/ld+json">
+          {
+            "@context": "https://schema.org",
+            "@type": "JobPosting",
+            "title": "Founding Operations Lead",
+            "datePosted": "2026-03-20T00:00:00Z",
+            "description": "<p>Lead operating cadence and recruiting systems.</p>",
+            "identifier": {"@type": "PropertyValue", "value": "12345"},
+            "hiringOrganization": {"@type": "Organization", "name": "Acme"},
+            "jobLocation": {
+              "@type": "Place",
+              "address": {
+                "@type": "PostalAddress",
+                "addressLocality": "San Francisco",
+                "addressRegion": "CA",
+                "addressCountry": "US"
+              }
+            },
+            "url": "https://www.workatastartup.com/jobs/12345"
+          }
+        </script>
+      </head>
+    </html>
+    """
+
+    extraction = extract_direct_listing_from_html(
+        "https://www.workatastartup.com/jobs/12345",
+        html,
+        final_url="https://www.workatastartup.com/jobs/12345",
+    )
+
+    assert isinstance(extraction, DirectJobExtractionResult)
+    assert extraction is not None
+    assert extraction.source_type == "yc_jobs"
+    assert extraction.job_id == "12345"
+    assert extraction.company_name == "Acme"
+    assert extraction.title == "Founding Operations Lead"
+    assert extraction.location == "San Francisco, CA, US"
 
 
 def test_surface_acceptance_reason_rejects_duckduckgo_self_links() -> None:

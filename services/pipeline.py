@@ -137,11 +137,13 @@ def _source_type_for_user_url(url: str) -> str:
         return "greenhouse"
     if "ashbyhq.com" in hostname:
         return "ashby"
+    if "workatastartup.com" in hostname:
+        return "yc_jobs"
     return "user_submitted"
 
 
 def _source_lineage_for_user_submission(source_type: str) -> str:
-    if source_type in {"greenhouse", "ashby"}:
+    if source_type in {"greenhouse", "ashby", "yc_jobs"}:
         return f"{source_type}+user_submitted"
     return "user_submitted"
 

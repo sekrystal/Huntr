@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from html import unescape
 from typing import Iterable, Optional
 from urllib.parse import parse_qs, unquote, urljoin, urlparse
+import json
 import re
 
 import requests
@@ -55,9 +56,11 @@ DDG_ZERO_YIELD_MARKERS = [
 ]
 BLOCKED_AGGREGATOR_HOSTS = ["linkedin.com", "indeed.com", "glassdoor.com", "ziprecruiter.com", "wellfound.com"]
 PROVIDER_OWNED_HOSTS = {"duckduckgo.com", "www.duckduckgo.com"}
+YC_JOBS_HOSTS = {"workatastartup.com", "www.workatastartup.com"}
 PROVIDER_SPECIFIC_QUERY_TERMS = (
     "site:job-boards.greenhouse.io",
     "site:jobs.ashbyhq.com",
+    "site:workatastartup.com/jobs",
     "greenhouse",
     "ashby",
 )
@@ -204,6 +207,22 @@ class ATSExtractionResult:
     geography_hints: list[str] = field(default_factory=list)
     confidence: float = 0.0
     via_openai: bool = False
+
+
+@dataclass
+class DirectJobExtractionResult:
+    source_url: str
+    final_url: str
+    source_type: str
+    job_id: str
+    title: str
+    company_name: str
+    location: Optional[str] = None
+    description_text: Optional[str] = None
+    apply_url: Optional[str] = None
+    posted_at: Optional[str] = None
+    page_title: str = ""
+    confidence: float = 0.0
 
 
 class SearchDiscoveryConnector:
@@ -499,6 +518,10 @@ def _surface_acceptance_reason(url: str) -> str:
                 return "accepted_ashby_job"
             return "accepted_ashby_root"
         return "unsupported_surface"
+    if host in YC_JOBS_HOSTS:
+        if len(path_parts) >= 2 and path_parts[0] == "jobs":
+            return "accepted_yc_job"
+        return "unsupported_surface"
     if host.startswith("careers."):
         return "accepted_careers_page"
     if any(token in path for token in ["/careers", "/jobs", "/join-us", "/work-with-us", "/open-roles", "/join", "/company/careers"]):
@@ -669,6 +692,108 @@ def _rewrite_query_for_provider_failover(query_text: str) -> str | None:
     if rewritten.strip().lower() == (query_text or "").strip().lower():
         return None
     return rewritten
+
+
+def _extract_json_ld_job_postings(html: str) -> list[dict]:
+    postings: list[dict] = []
+    for match in re.finditer(
+        r'<script[^>]+type=["\']application/ld\+json["\'][^>]*>(?P<body>.*?)</script>',
+        html,
+        re.IGNORECASE | re.DOTALL,
+    ):
+        body = (match.group("body") or "").strip()
+        if not body:
+            continue
+        try:
+            payload = json.loads(unescape(body))
+        except json.JSONDecodeError:
+            continue
+        stack = payload if isinstance(payload, list) else [payload]
+        while stack:
+            item = stack.pop()
+            if isinstance(item, list):
+                stack.extend(item)
+                continue
+            if not isinstance(item, dict):
+                continue
+            item_type = str(item.get("@type") or "")
+            if item_type == "JobPosting":
+                postings.append(item)
+            if isinstance(item.get("@graph"), list):
+                stack.extend(item["@graph"])
+    return postings
+
+
+def _coerce_location_text(job_posting: dict) -> Optional[str]:
+    locations = job_posting.get("jobLocation")
+    items = locations if isinstance(locations, list) else [locations]
+    values: list[str] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        address = item.get("address")
+        if isinstance(address, dict):
+            locality = address.get("addressLocality")
+            region = address.get("addressRegion")
+            country = address.get("addressCountry")
+            text = ", ".join(part for part in [locality, region, country] if part)
+            if text:
+                values.append(text)
+                continue
+        if item.get("name"):
+            values.append(str(item["name"]))
+    return " / ".join(dict.fromkeys(values)) or None
+
+
+def _coerce_identifier(job_posting: dict, final_url: str) -> str:
+    identifier = job_posting.get("identifier")
+    if isinstance(identifier, dict):
+        value = identifier.get("value") or identifier.get("name")
+        if value:
+            return str(value)
+    if isinstance(identifier, str) and identifier.strip():
+        return identifier.strip()
+    path_parts = [part for part in urlparse(final_url).path.split("/") if part]
+    if len(path_parts) >= 2 and path_parts[0].lower() == "jobs":
+        return path_parts[-1]
+    return final_url
+
+
+def extract_direct_listing_from_html(
+    source_url: str,
+    html: str,
+    final_url: Optional[str] = None,
+) -> Optional[DirectJobExtractionResult]:
+    normalized_url = final_url or source_url
+    host = (urlparse(normalized_url).netloc or "").lower()
+    page_title_match = TITLE_RE.search(html)
+    page_title = _clean_html(page_title_match.group("title")) if page_title_match else ""
+
+    if host not in YC_JOBS_HOSTS:
+        return None
+
+    for job_posting in _extract_json_ld_job_postings(html):
+        company = job_posting.get("hiringOrganization") or {}
+        company_name = company.get("name") if isinstance(company, dict) else None
+        title = (job_posting.get("title") or "").strip()
+        if not title or not company_name:
+            continue
+        apply_url = job_posting.get("directApply") or job_posting.get("url") or normalized_url
+        return DirectJobExtractionResult(
+            source_url=source_url,
+            final_url=normalized_url,
+            source_type="yc_jobs",
+            job_id=_coerce_identifier(job_posting, normalized_url),
+            title=title,
+            company_name=str(company_name).strip(),
+            location=_coerce_location_text(job_posting),
+            description_text=_clean_html(str(job_posting.get("description") or "")),
+            apply_url=str(apply_url).strip() if apply_url else normalized_url,
+            posted_at=job_posting.get("datePosted"),
+            page_title=page_title,
+            confidence=0.88,
+        )
+    return None
 
 
 def fetch_page_snapshot(url: str, timeout: tuple[int, int] = (5, 15)) -> tuple[str, str]:
@@ -856,10 +981,11 @@ def build_search_queries(
         add(f'"{family_query}" startup greenhouse')
         add(f'"{family_query}" startup ashby')
 
-    # Keep some ATS-direct probes, but make them a minority of the query mix.
+    # Keep source-specific probes bounded and a minority of the query mix.
     for title in primary_titles[:2]:
         add(f'site:job-boards.greenhouse.io "{title}"')
         add(f'site:jobs.ashbyhq.com "{title}"')
+        add(f'site:workatastartup.com/jobs "{title}"')
     return queries
 
 

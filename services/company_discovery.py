@@ -184,6 +184,17 @@ def _company_name_from_locator(locator: str) -> str:
     return locator.replace("-", " ").replace("_", " ").title()
 
 
+def _company_name_from_result_title(title: str, fallback: str) -> str:
+    normalized = (title or "").strip()
+    if not normalized:
+        return _company_name_from_locator(fallback)
+    cleaned = normalized.replace(" | Work at a Startup", "").replace(" | YC Jobs", "").strip()
+    match = re.search(r"\bat\s+(?P<company>[^|]+)$", cleaned, re.IGNORECASE)
+    if match:
+        return match.group("company").strip()
+    return _company_name_from_locator(fallback)
+
+
 def _normalize_result_url(url: str) -> str:
     parsed = urlparse(url)
     if parsed.netloc.endswith("duckduckgo.com") and parsed.path.startswith("/l/"):
@@ -212,6 +223,9 @@ def inspect_search_result_candidate(result: SearchDiscoveryResult) -> dict[str, 
     elif "jobs.ashbyhq.com" in host and path_parts:
         board_type = "ashby"
         board_locator = path_parts[0]
+    elif host in {"workatastartup.com", "www.workatastartup.com"} and len(path_parts) >= 2 and path_parts[0] == "jobs":
+        board_type = "yc_jobs"
+        board_locator = path_parts[-1]
     elif host.startswith("careers.") or any(token in parsed.path.lower() for token in ["/careers", "/jobs", "/join-us", "/work-with-us", "/open-roles", "/join", "/company/careers"]):
         board_type = "careers_page"
         board_locator = host
@@ -237,8 +251,15 @@ def candidate_from_search_result(result: SearchDiscoveryResult) -> CompanyDiscov
     board_locator = inspection["board_locator"]
     if not board_type or not board_locator:
         return None
-    company_name = _company_name_from_locator(board_locator.split(".")[0] if board_type == "careers_page" else board_locator)
-    company_domain = inspection["host"] if board_type == "careers_page" else None
+    if board_type == "careers_page":
+        company_name = _company_name_from_locator(board_locator.split(".")[0])
+        company_domain = inspection["host"]
+    elif board_type == "yc_jobs":
+        company_name = _company_name_from_result_title(result.title, board_locator)
+        company_domain = inspection["host"]
+    else:
+        company_name = _company_name_from_locator(board_locator)
+        company_domain = None
     return CompanyDiscoveryCandidate(
         company_name=company_name,
         company_domain=company_domain,
@@ -308,7 +329,7 @@ def triage_candidate(
         score += 0.7
         reasons.append("matched preferred domain theme")
 
-    if any(term in query_lower for term in ["careers", "greenhouse", "ashby", "startup"]):
+    if any(term in query_lower for term in ["careers", "greenhouse", "ashby", "startup", "work at a startup", "yc jobs"]):
         score += 0.4
         reasons.append("query indicates job-surface intent")
 
@@ -718,6 +739,21 @@ def build_discovery_source_matrix(
         )
         rows.append(
             DiscoverySourceMatrixRow(
+                source_key="yc_jobs",
+                label="YC Jobs",
+                classification="partially_working",
+                runtime_state="bounded_follow_on",
+                toggle_key="SEARCH_DISCOVERY_ENABLED",
+                toggle_enabled=True,
+                runtime_enabled=True,
+                strict_live_enabled=False,
+                live_ready=True,
+                trusted_for_output=True,
+                reason="Search-discovered YC job pages can be fetched and normalized one listing at a time, but there is no universal board polling or broad posting-page support yet.",
+            )
+        )
+        rows.append(
+            DiscoverySourceMatrixRow(
                 source_key="search_web_scrape_fallback",
                 label="Search Scrape Fallback",
                 classification="partially_working",
@@ -729,6 +765,21 @@ def build_discovery_source_matrix(
                 live_ready=True,
                 trusted_for_output=False,
                 reason="Careers-page scraping is bounded and only extracts ATS identifiers or careers surfaces; it does not directly trust scraped jobs.",
+            )
+        )
+        rows.append(
+            DiscoverySourceMatrixRow(
+                source_key="broader_web_sources",
+                label="Broader Web Sources",
+                classification="not_working",
+                runtime_state="staged",
+                toggle_key="SEARCH_DISCOVERY_ENABLED",
+                toggle_enabled=True,
+                runtime_enabled=False,
+                strict_live_enabled=False,
+                live_ready=False,
+                trusted_for_output=False,
+                reason="Additional non-ATS sources are explicitly staged; only YC direct job pages are normalized in this slice, and generic posting pages are not treated as supported.",
             )
         )
     else:
@@ -760,6 +811,36 @@ def build_discovery_source_matrix(
                 live_ready=False,
                 trusted_for_output=False,
                 reason="Careers-page scraping is only active behind search discovery and is fully off when search discovery is disabled.",
+            )
+        )
+        rows.append(
+            DiscoverySourceMatrixRow(
+                source_key="yc_jobs",
+                label="YC Jobs",
+                classification="not_working",
+                runtime_state="disabled",
+                toggle_key="SEARCH_DISCOVERY_ENABLED",
+                toggle_enabled=False,
+                runtime_enabled=False,
+                strict_live_enabled=False,
+                live_ready=False,
+                trusted_for_output=False,
+                reason="YC Jobs support is only available through bounded search discovery and direct page normalization when search discovery is enabled.",
+            )
+        )
+        rows.append(
+            DiscoverySourceMatrixRow(
+                source_key="broader_web_sources",
+                label="Broader Web Sources",
+                classification="not_working",
+                runtime_state="staged",
+                toggle_key="SEARCH_DISCOVERY_ENABLED",
+                toggle_enabled=False,
+                runtime_enabled=False,
+                strict_live_enabled=False,
+                live_ready=False,
+                trusted_for_output=False,
+                reason="Additional broader job sources remain staged until a bounded, truthful normalization path exists for them.",
             )
         )
 

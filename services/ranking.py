@@ -163,7 +163,7 @@ def score_lead(
     lead_work_mode = infer_work_mode(location, description_text)
 
     freshness_score = {"fresh": 1.6, "recent": 1.0, "stale": -1.2, "unknown": -0.5}[freshness_label]
-    source_quality = {"greenhouse": 1.2, "ashby": 1.2, "x": 0.5, "x_signal": 0.5}.get(source_type, 0.6)
+    source_quality = {"greenhouse": 1.2, "ashby": 1.2, "yc_jobs": 0.9, "x": 0.5, "x_signal": 0.5}.get(source_type, 0.6)
     evidence_quality = min(0.4 * max(evidence_count, 1), 1.2)
     novelty = 0.5 if lead_type in {"signal", "combined"} else 0.2
     location_fit = 0.0

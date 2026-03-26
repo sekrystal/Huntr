@@ -96,6 +96,26 @@ def test_candidate_conversion_handles_hosted_board_roots_and_redirects() -> None
     assert inspection["normalized_url"] == "https://boards.greenhouse.io/acme/jobs/1"
 
 
+def test_candidate_conversion_accepts_yc_jobs_direct_listings() -> None:
+    yc_result = SearchDiscoveryResult(
+        query_text='site:workatastartup.com/jobs "founding operations lead"',
+        title="Founding Operations Lead at Acme | Work at a Startup",
+        url="https://www.workatastartup.com/jobs/12345",
+        query_family="role_market",
+    )
+
+    candidate = candidate_from_search_result(yc_result)
+    inspection = inspect_search_result_candidate(yc_result)
+
+    assert candidate is not None
+    assert candidate.company_name == "Acme"
+    assert candidate.board_type == "yc_jobs"
+    assert candidate.board_locator == "12345"
+    assert candidate.query_family == "role_market"
+    assert inspection["board_type"] == "yc_jobs"
+    assert inspection["board_locator"] == "12345"
+
+
 def test_surface_provenance_classifies_preseeded_and_discovered() -> None:
     settings = Settings(greenhouse_board_tokens="ramp")
     assert classify_surface_provenance("greenhouse", "ramp", is_new=False, settings=settings) == "preseeded"
@@ -295,8 +315,11 @@ def test_discovery_source_matrix_classifies_live_truth_explicitly() -> None:
     assert by_key["greenhouse"].trusted_for_output is True
     assert by_key["ashby"].classification == "working"
     assert by_key["search_web"].classification == "partially_working"
+    assert by_key["yc_jobs"].classification == "partially_working"
+    assert by_key["yc_jobs"].trusted_for_output is True
     assert by_key["search_web"].trusted_for_output is False
     assert by_key["search_web_scrape_fallback"].classification == "partially_working"
+    assert by_key["broader_web_sources"].classification == "not_working"
     assert by_key["x_search"].classification == "not_working"
     assert by_key["user_submitted"].classification == "working"
 
@@ -323,7 +346,9 @@ def test_discovery_source_matrix_marks_disabled_sources_explicitly() -> None:
     assert by_key["greenhouse"].classification == "not_working"
     assert by_key["ashby"].classification == "not_working"
     assert by_key["search_web"].classification == "not_working"
+    assert by_key["yc_jobs"].classification == "not_working"
     assert by_key["search_web_scrape_fallback"].classification == "not_working"
+    assert by_key["broader_web_sources"].classification == "not_working"
     assert by_key["x_search"].classification == "not_working"
     assert by_key["user_submitted"].classification == "working"
 
