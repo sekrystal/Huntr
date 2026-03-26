@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import requests
+
 from connectors.search_web import (
     SearchDiscoveryConnector,
     SearchDiscoveryResult,
@@ -180,6 +182,83 @@ def test_fetch_retries_once_with_rewritten_query_after_provider_self_link_only_r
     assert live is True
     assert seen_queries == ['site:job-boards.greenhouse.io "chief of staff"', '"chief of staff" careers']
     assert [item.url for item in results] == ["https://careers.acme.ai/open-roles"]
+    assert connector.last_failure_classification is None
+    assert connector.last_fetch_diagnostics["status"] == "results"
+    assert connector.last_fetch_diagnostics["zero_yield_attempt_count"] == 1
+    assert connector.last_fetch_diagnostics["fallback_order"] == [
+        "provider_query",
+        "provider_failover_rewrite",
+        "scrape_parse_extraction",
+    ]
+
+
+def test_fetch_classifies_zero_yield_provider_failure_when_no_results_survive(monkeypatch) -> None:
+    class FakeResponse:
+        def __init__(self, query: str) -> None:
+            self.status_code = 200
+            self.url = f"https://duckduckgo.com/html/?q={query}"
+            self.text = """
+            <html>
+              <body>
+                <a class="result__a" href="https://duckduckgo.com/help">Help</a>
+              </body>
+            </html>
+            """
+            self.content = self.text.encode("utf-8")
+
+        def raise_for_status(self) -> None:
+            return None
+
+    monkeypatch.setattr(
+        "connectors.search_web.get_settings",
+        lambda: SimpleNamespace(
+            search_discovery_enabled=True,
+            search_discovery_query_limit=8,
+            search_discovery_result_limit=5,
+            demo_mode=True,
+        ),
+    )
+    monkeypatch.setattr("connectors.search_web.requests.get", lambda _url, *, params, **_kwargs: FakeResponse(params["q"]))
+
+    connector = SearchDiscoveryConnector()
+
+    results, live = connector.fetch(['site:job-boards.greenhouse.io "chief of staff"'])
+
+    assert live is True
+    assert results == []
+    assert connector.last_failure_classification == "search_provider_failure"
+    assert connector.last_error == "Search discovery zero-yield: provider self-links only"
+    assert connector.last_fetch_diagnostics["status"] == "empty"
+    assert connector.last_fetch_diagnostics["failure_classification"] == "search_provider_failure"
+    assert connector.last_fetch_diagnostics["zero_yield_queries"][0]["fallback_stage"] == "provider_query"
+
+
+def test_fetch_classifies_timeout_without_raising_in_demo_mode(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "connectors.search_web.get_settings",
+        lambda: SimpleNamespace(
+            search_discovery_enabled=True,
+            search_discovery_query_limit=8,
+            search_discovery_result_limit=5,
+            demo_mode=True,
+        ),
+    )
+
+    def fake_get(*_args, **_kwargs):
+        raise requests.exceptions.Timeout("simulated timeout")
+
+    monkeypatch.setattr("connectors.search_web.requests.get", fake_get)
+
+    connector = SearchDiscoveryConnector()
+
+    results, live = connector.fetch(['"chief of staff" careers'])
+
+    assert live is True
+    assert results == []
+    assert connector.last_failure_classification == "search_timeout"
+    assert connector.last_error == "Search discovery zero-yield: search request timed out"
+    assert connector.last_fetch_diagnostics["status"] == "empty"
+    assert connector.last_fetch_diagnostics["failure_classification"] == "search_timeout"
 
 
 def test_build_search_queries_prefers_careers_mix_over_ats_direct_only() -> None:

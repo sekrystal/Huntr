@@ -210,36 +210,90 @@ class SearchDiscoveryConnector:
     def __init__(self) -> None:
         self.settings = get_settings()
         self.last_error: str | None = None
+        self.last_failure_classification: str | None = None
+        self.last_fetch_diagnostics: dict[str, object] = {}
 
     def fetch(self, queries: list[str], require_live: bool = False) -> tuple[list[SearchDiscoveryResult], bool]:
         if self.settings.search_discovery_enabled and queries:
             try:
                 self.last_error = None
+                self.last_failure_classification = None
+                self.last_fetch_diagnostics = {}
                 return self._fetch_live(queries), True
             except Exception as exc:
                 self.last_error = str(exc)
+                if isinstance(exc, requests.exceptions.Timeout):
+                    self.last_failure_classification = "search_timeout"
+                elif isinstance(exc, requests.exceptions.HTTPError):
+                    self.last_failure_classification = "search_http_error"
+                elif isinstance(exc, requests.exceptions.RequestException):
+                    self.last_failure_classification = "search_transport_error"
+                else:
+                    self.last_failure_classification = "search_runtime_error"
+                self.last_fetch_diagnostics = {
+                    "status": "failed",
+                    "failure_classification": self.last_failure_classification,
+                    "error": self.last_error,
+                    "query_count": len(queries),
+                    "fallback_order": ["provider_query", "provider_failover_rewrite"],
+                }
                 logger.warning("Search discovery failed: %s", exc)
                 if require_live or not self.settings.demo_mode:
                     raise
         elif require_live or not self.settings.demo_mode:
             raise RuntimeError("Search discovery is disabled or has no queries configured.")
         self.last_error = self.last_error or "Search discovery disabled; no web search performed."
+        self.last_failure_classification = self.last_failure_classification or "search_disabled"
+        self.last_fetch_diagnostics = self.last_fetch_diagnostics or {
+            "status": "disabled",
+            "failure_classification": self.last_failure_classification,
+            "error": self.last_error,
+            "query_count": len(queries),
+            "fallback_order": ["provider_query", "provider_failover_rewrite"],
+        }
         return [], False
 
     def _fetch_live(self, queries: list[str]) -> list[SearchDiscoveryResult]:
         results: list[SearchDiscoveryResult] = []
         seen_urls: set[str] = set()
         zero_yield_queries: list[dict[str, object]] = []
+        query_diagnostics: list[dict[str, object]] = []
+        all_attempt_diagnostics: list[dict[str, object]] = []
         for query_text in queries[: self.settings.search_discovery_query_limit]:
             query_results, query_attempts = self._fetch_query_results(query_text, seen_urls)
+            all_attempt_diagnostics.extend(query_attempts)
+            query_diagnostics.append(
+                {
+                    "query": query_text,
+                    "result_count": len(query_results),
+                    "attempts": query_attempts,
+                    "status": "results" if query_results else "empty",
+                }
+            )
             if not query_results:
                 zero_yield_queries.extend(query_attempts)
             for item in query_results:
                 results.append(item)
                 seen_urls.add(item.url)
+        failure_classification = None
         if not results:
             reason = zero_yield_queries[0]["reason"] if zero_yield_queries else "search provider returned no accepted results"
             self.last_error = f"Search discovery zero-yield: {reason}"
+            failure_classification = str(zero_yield_queries[0].get("classification") or "search_zero_yield") if zero_yield_queries else "search_zero_yield"
+        elif zero_yield_queries:
+            failure_classification = "partial_failure"
+            self.last_error = f"Search discovery recovered after fallback; {len(zero_yield_queries)} query attempts yielded nothing."
+        self.last_failure_classification = failure_classification
+        self.last_fetch_diagnostics = {
+            "status": "results" if results else "empty",
+            "failure_classification": failure_classification,
+            "query_count": min(len(queries), self.settings.search_discovery_query_limit),
+            "result_count": len(results),
+            "zero_yield_attempt_count": len(all_attempt_diagnostics),
+            "zero_yield_queries": all_attempt_diagnostics[:10],
+            "query_diagnostics": query_diagnostics[:10],
+            "fallback_order": ["provider_query", "provider_failover_rewrite", "scrape_parse_extraction"],
+        }
         return results
 
     def _fetch_query_results(
@@ -250,15 +304,54 @@ class SearchDiscoveryConnector:
         zero_yield_attempts: list[dict[str, object]] = []
         current_query = query_text
         for attempt_index in range(2):
-            response = requests.get(
-                "https://duckduckgo.com/html/",
-                params={"q": current_query},
-                timeout=(5, 20),
-                headers={"User-Agent": BROWSER_USER_AGENT},
-                allow_redirects=True,
-            )
-            response.raise_for_status()
-            html = response.text
+            try:
+                response = requests.get(
+                    "https://duckduckgo.com/html/",
+                    params={"q": current_query},
+                    timeout=(5, 20),
+                    headers={"User-Agent": BROWSER_USER_AGENT},
+                    allow_redirects=True,
+                )
+                response.raise_for_status()
+                html = response.text
+            except requests.exceptions.Timeout as exc:
+                timeout_attempt = {
+                    "query": current_query,
+                    "reason": "search request timed out",
+                    "classification": "search_timeout",
+                    "attempt": attempt_index + 1,
+                    "fallback_stage": "provider_query" if attempt_index == 0 else "provider_failover_rewrite",
+                    "error": str(exc),
+                }
+                zero_yield_attempts.append(timeout_attempt)
+                logger.warning("[SEARCH_PROVIDER_TIMEOUT] %s", timeout_attempt)
+                break
+            except requests.exceptions.HTTPError as exc:
+                response = exc.response
+                http_attempt = {
+                    "query": current_query,
+                    "reason": "search provider http error",
+                    "classification": "search_http_error",
+                    "status_code": response.status_code if response is not None else None,
+                    "attempt": attempt_index + 1,
+                    "fallback_stage": "provider_query" if attempt_index == 0 else "provider_failover_rewrite",
+                    "error": str(exc),
+                }
+                zero_yield_attempts.append(http_attempt)
+                logger.warning("[SEARCH_PROVIDER_HTTP_ERROR] %s", http_attempt)
+                break
+            except requests.exceptions.RequestException as exc:
+                request_attempt = {
+                    "query": current_query,
+                    "reason": "search transport error",
+                    "classification": "search_transport_error",
+                    "attempt": attempt_index + 1,
+                    "fallback_stage": "provider_query" if attempt_index == 0 else "provider_failover_rewrite",
+                    "error": str(exc),
+                }
+                zero_yield_attempts.append(request_attempt)
+                logger.warning("[SEARCH_PROVIDER_REQUEST_ERROR] %s", request_attempt)
+                break
             block_markers = [marker for marker in DDG_ZERO_YIELD_MARKERS if marker in html.lower()]
             strict_matches = list(RESULT_LINK_RE.finditer(html))
             fallback_candidates = _extract_fallback_anchor_candidates(html)
@@ -331,7 +424,9 @@ class SearchDiscoveryConnector:
                 "fallback_anchor_candidate_count": len(fallback_candidates),
                 "block_markers": block_markers,
                 "reason": diagnostics["reason"],
+                "classification": "search_provider_failure" if diagnostics["reason"] == "provider self-links only" else "search_zero_yield",
                 "attempt": attempt_index + 1,
+                "fallback_stage": "provider_query" if attempt_index == 0 else "provider_failover_rewrite",
             }
             zero_yield_attempts.append(zero_yield)
             logger.warning("[SEARCH_PROVIDER_ZERO_RESULTS] %s", zero_yield)

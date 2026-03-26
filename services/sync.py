@@ -68,6 +68,72 @@ def _bump_query_family_metric(
     metrics[family][field] = int(metrics[family].get(field, 0)) + amount
 
 
+def _search_fetch_diagnostics(connector: SearchDiscoveryConnector, search_queries: list[str]) -> dict[str, object]:
+    diagnostics = dict(getattr(connector, "last_fetch_diagnostics", {}) or {})
+    if diagnostics:
+        diagnostics.setdefault("query_count", len(search_queries))
+        diagnostics.setdefault("fallback_order", ["provider_query", "provider_failover_rewrite", "scrape_parse_extraction"])
+        return diagnostics
+    return {
+        "status": "not_run",
+        "failure_classification": "search_not_run",
+        "query_count": len(search_queries),
+        "result_count": 0,
+        "fallback_order": ["provider_query", "provider_failover_rewrite", "scrape_parse_extraction"],
+    }
+
+
+def _search_zero_yield_summary(search_diagnostics: dict[str, object]) -> dict[str, object] | None:
+    if search_diagnostics.get("status") != "empty":
+        return None
+    query_attempts = list(search_diagnostics.get("zero_yield_queries") or [])
+    first_attempt = query_attempts[0] if query_attempts else {}
+    return {
+        "status": "empty",
+        "failure_classification": search_diagnostics.get("failure_classification") or "search_zero_yield",
+        "reason": first_attempt.get("reason") or "search provider returned no accepted results",
+        "query_count": search_diagnostics.get("query_count", 0),
+        "zero_yield_attempt_count": search_diagnostics.get("zero_yield_attempt_count", len(query_attempts)),
+        "fallback_order": list(search_diagnostics.get("fallback_order") or []),
+        "attempts": query_attempts[:5],
+    }
+
+
+def _expansion_fallback_diagnostics(
+    candidate,
+    row: CompanyDiscovery,
+    *,
+    result_count: int,
+    blocked_reason: str | None,
+) -> dict[str, object]:
+    metadata = dict(row.metadata_json or {})
+    careers_url = metadata.get("careers_url")
+    discovered_urls = list(metadata.get("discovered_urls") or [])
+    scrape_candidates = [url for url in [careers_url, *discovered_urls] if url]
+    scrape_attempted = bool(scrape_candidates) or candidate.board_type == "careers_page"
+    diagnostics = {
+        "fallback_order": ["structured_connector_poll", "scrape_parse_fallback"],
+        "scrape_parse_attempted": scrape_attempted,
+        "scrape_parse_candidate_urls": scrape_candidates[:5],
+    }
+    if candidate.board_type == "careers_page":
+        diagnostics["primary_path"] = "scrape_parse_only"
+        diagnostics["scrape_parse_status"] = "no_ats_identifiers_extracted" if result_count == 0 else "careers_surface_selected"
+    elif result_count > 0:
+        diagnostics["primary_path"] = "structured_connector_poll"
+        diagnostics["scrape_parse_status"] = "not_needed"
+    elif blocked_reason == "investigate":
+        diagnostics["primary_path"] = "structured_connector_poll"
+        diagnostics["scrape_parse_status"] = "blocked_pending_investigation"
+    elif scrape_attempted:
+        diagnostics["primary_path"] = "structured_connector_poll"
+        diagnostics["scrape_parse_status"] = "attempted_before_empty_connector_yield"
+    else:
+        diagnostics["primary_path"] = "structured_connector_poll"
+        diagnostics["scrape_parse_status"] = "not_applicable"
+    return diagnostics
+
+
 def _source_learning(profile) -> dict:
     return (profile.extracted_summary_json or {}).get("learning", {})
 
@@ -830,6 +896,12 @@ def sync_all(
             partial(search_connector.fetch, search_queries, "search_web" in strict_live_connectors),
             date_fields=[],
         )
+        search_diagnostics = _search_fetch_diagnostics(search_connector, search_queries)
+        cycle_metrics["search_fetch_diagnostics"] = search_diagnostics
+        zero_yield_summary = _search_zero_yield_summary(search_diagnostics)
+        if zero_yield_summary is not None:
+            cycle_metrics["search_zero_yield"] = zero_yield_summary
+            logger.warning("[DISCOVERY_SEARCH_ZERO_YIELD] %s", zero_yield_summary)
         extractions, derived_results = extractor_agent(search_results, settings=settings)
         extraction_by_url: dict[str, object] = {}
         for extraction in extractions:
@@ -1065,6 +1137,8 @@ def sync_all(
         cycle_metrics["candidate_conversion_drop_count"] = max(len(search_results) - convertible_candidate_count, 0)
         cycle_metrics["accepted_urls_sample"] = [result.url for result in search_results[:10]]
         cycle_metrics["dropped_urls_sample"] = [item["url"] for item in dropped_results[:10]]
+        cycle_metrics["scrape_parse_extraction_count"] = len(extractions)
+        cycle_metrics["scrape_parse_derived_result_count"] = len(derived_results)
         selected_discoveries = select_candidates_for_expansion(candidate_rows, settings=settings)
         cycle_metrics["selected_expansion_count"] = len(selected_discoveries)
         cycle_metrics["empty_expansion_count"] += 0
@@ -1277,6 +1351,14 @@ def sync_all(
             "yielded_listings": result_count,
             "failure_boundary": "connector_yield" if result_count == 0 else None,
         }
+        expansion_diagnostics.update(
+            _expansion_fallback_diagnostics(
+                candidate,
+                row,
+                result_count=result_count,
+                blocked_reason=blocked_reason,
+            )
+        )
         if candidate.board_type == "ashby":
             ashby_status = ashby_org_statuses.get(candidate.board_locator.lower())
             expansion_diagnostics["surface_status"] = ashby_status or "unknown"
@@ -1286,6 +1368,10 @@ def sync_all(
                 expansion_diagnostics["failure_boundary"] = "empty_discovered_surface"
         elif candidate.board_type == "greenhouse":
             expansion_diagnostics["surface_status"] = "jobs_returned" if result_count > 0 else "empty_jobs"
+        elif candidate.board_type == "careers_page":
+            expansion_diagnostics["surface_status"] = "no_usable_jobs_found"
+            if result_count == 0:
+                expansion_diagnostics["failure_boundary"] = "scrape_parse_yield"
         row.metadata_json = {
             **(row.metadata_json or {}),
             "selected_score": score,

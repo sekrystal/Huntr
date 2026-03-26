@@ -6,7 +6,7 @@ import logging
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from connectors.search_web import SearchDiscoveryResult
+from connectors.search_web import ATSExtractionResult, SearchDiscoveryResult
 from core.config import Settings
 from core.models import AgentRun, Base, CandidateProfile, Lead, Listing
 from services.pipeline import run_critic_agent
@@ -770,6 +770,9 @@ def test_sync_all_persists_query_family_metrics(monkeypatch) -> None:
     company = session.query(sync_service.CompanyDiscovery).filter(sync_service.CompanyDiscovery.discovery_key == "greenhouse:acme").one()
     assert company.metadata_json["expansion_diagnostics"]["status"] == "empty"
     assert company.metadata_json["expansion_diagnostics"]["failure_boundary"] == "connector_yield"
+    assert company.metadata_json["expansion_diagnostics"]["fallback_order"] == ["structured_connector_poll", "scrape_parse_fallback"]
+    assert company.metadata_json["expansion_diagnostics"]["scrape_parse_attempted"] is False
+    assert company.metadata_json["expansion_diagnostics"]["scrape_parse_status"] == "not_applicable"
     assert company.metadata_json["discovery_lineage"]["planner"]["query_family"] == "ats_direct"
     assert company.metadata_json["discovery_lineage"]["surface"]["source_lineage"] == "greenhouse+duckduckgo_html"
     assert company.metadata_json["discovery_lineage"]["expansion"]["status"] == "empty"
@@ -829,6 +832,78 @@ def test_sync_all_persists_ashby_invalid_surface_diagnostics(monkeypatch) -> Non
     assert result.discovery_status["cycle_metrics"]["empty_expansion_count"] == 1
     assert company.metadata_json["expansion_diagnostics"]["surface_status"] == "invalid_identifier"
     assert company.metadata_json["expansion_diagnostics"]["failure_boundary"] == "invalid_discovered_surface"
+    assert company.metadata_json["expansion_diagnostics"]["fallback_order"] == ["structured_connector_poll", "scrape_parse_fallback"]
+
+
+def test_sync_all_records_scrape_parse_fallback_for_careers_page_zero_yield(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(engine)
+    session = sessionmaker(bind=engine, expire_on_commit=False)()
+    _seed_profile(session)
+
+    monkeypatch.setattr(sync_service, "get_candidate_profile", lambda _session: session.query(CandidateProfile).first())
+    monkeypatch.setattr(sync_service, "ensure_source_queries", lambda _session: [])
+    monkeypatch.setattr(sync_service, "generate_follow_up_tasks", lambda _session: 0)
+    monkeypatch.setattr(
+        sync_service,
+        "planner_agent",
+        lambda *_args, **_kwargs: {
+            "queries": ['"Acme" "operations lead" careers'],
+            "query_themes": ["company_targeted"],
+            "company_archetypes": [],
+            "priority_notes": [],
+        },
+    )
+    monkeypatch.setattr(sync_service, "learning_agent", lambda *_args, **_kwargs: {"next_queries": [], "focus_companies": [], "notes": []})
+    monkeypatch.setattr(sync_service, "triage_agent", lambda **_kwargs: (3.4, ["deterministic test"], "pursue"))
+    monkeypatch.setattr(
+        sync_service,
+        "extractor_agent",
+        lambda results, **_kwargs: (
+            [
+                ATSExtractionResult(
+                    source_url=results[0].url,
+                    final_url=results[0].url,
+                    page_title="Acme Careers",
+                    company_name="Acme",
+                    careers_url=results[0].url,
+                    ats_type="careers_page",
+                    greenhouse_tokens=[],
+                    ashby_identifiers=[],
+                    discovered_urls=[],
+                    geography_hints=[],
+                    confidence=0.41,
+                    via_openai=False,
+                )
+            ],
+            [],
+        ),
+    )
+
+    def fake_run_connector_fetch(_session, connector_name, fetch_fn, date_fields=None):
+        if connector_name == "search_web":
+            return [
+                SearchDiscoveryResult(
+                    query_text='"Acme" "operations lead" careers',
+                    title="Acme Careers",
+                    url="https://acme.ai/careers",
+                    query_family="company_targeted",
+                )
+            ], True, None
+        return [], False, None
+
+    monkeypatch.setattr(sync_service, "run_connector_fetch", fake_run_connector_fetch)
+    monkeypatch.setattr(sync_service, "get_settings", lambda: Settings(search_discovery_enabled=True))
+
+    result = sync_service.sync_all(session, enabled_connectors={"search_web"})
+
+    company = session.query(sync_service.CompanyDiscovery).filter(sync_service.CompanyDiscovery.discovery_key == "careers_page:acme.ai").one()
+    assert result.discovery_status["cycle_metrics"]["scrape_parse_extraction_count"] == 1
+    assert company.metadata_json["expansion_diagnostics"]["fallback_order"] == ["structured_connector_poll", "scrape_parse_fallback"]
+    assert company.metadata_json["expansion_diagnostics"]["scrape_parse_attempted"] is True
+    assert company.metadata_json["expansion_diagnostics"]["scrape_parse_status"] == "no_ats_identifiers_extracted"
+    assert company.metadata_json["expansion_diagnostics"]["surface_status"] == "no_usable_jobs_found"
+    assert company.metadata_json["expansion_diagnostics"]["failure_boundary"] == "scrape_parse_yield"
 
 
 def test_sync_all_persists_productive_query_family_lineage(monkeypatch) -> None:
