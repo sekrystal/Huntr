@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from core.models import ConnectorHealth
+from core.time import utcnow
 from services.activity import log_agent_failure
 
 
@@ -22,7 +23,7 @@ def get_or_create_connector_health(session: Session, connector_name: str) -> Con
 
 
 def connector_circuit_open(row: ConnectorHealth) -> bool:
-    return row.circuit_state == "open" and row.disabled_until is not None and row.disabled_until > datetime.utcnow()
+    return row.circuit_state == "open" and row.disabled_until is not None and row.disabled_until > utcnow()
 
 
 def _bounded_score(value: float) -> float:
@@ -89,7 +90,7 @@ def _extract_lag_seconds(items: list[dict[str, Any]], date_fields: list[str]) ->
     if not parsed_times:
         return None
     newest = max(parsed_times)
-    return max(int((datetime.utcnow() - newest).total_seconds()), 0)
+    return max(int((utcnow() - newest).total_seconds()), 0)
 
 
 def record_connector_success(
@@ -109,7 +110,7 @@ def record_connector_success(
     row.consecutive_failures = 0
     row.circuit_state = "closed"
     row.disabled_until = None
-    row.last_success_at = datetime.utcnow()
+    row.last_success_at = utcnow()
     row.last_error = note
     row.last_failure_classification = failure_classification
     row.last_mode = mode
@@ -147,14 +148,14 @@ def record_connector_failure(
     row.consecutive_failures += 1
     row.recent_failures += 1
     row.recent_successes = 0
-    row.last_failure_at = datetime.utcnow()
+    row.last_failure_at = utcnow()
     row.last_error = error_summary[:500]
     row.last_failure_classification = classification
     row.status = "failed"
     row.approved_for_unattended = False
     if row.consecutive_failures >= failure_threshold:
         row.circuit_state = "open"
-        row.disabled_until = datetime.utcnow() + timedelta(minutes=cooldown_minutes)
+        row.disabled_until = utcnow() + timedelta(minutes=cooldown_minutes)
         row.status = "circuit_open"
     row.trust_score = _compute_trust_score(row)
     session.flush()

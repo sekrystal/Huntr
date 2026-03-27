@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from core.config import Settings, get_settings
 from core.models import ConnectorHealth
+from core.time import utcnow
 from services.connectors_health import get_or_create_connector_health
 
 
@@ -46,7 +47,7 @@ def connector_blocked_reason(
     if row.last_failure_classification == "config_error":
         return "config_error"
     if row.circuit_state == "open":
-        if row.disabled_until and row.disabled_until > datetime.utcnow():
+        if row.disabled_until and row.disabled_until > utcnow():
             return "cooldown"
         return "circuit_open"
     return None

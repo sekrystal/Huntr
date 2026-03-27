@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from core.models import Investigation, Signal
 from core.schemas import InvestigationResponse
+from core.time import utcnow
 
 
 def upsert_investigation(
@@ -57,7 +58,7 @@ def mark_investigation_attempt(session: Session, signal_id: int, note: str, hour
         return
     investigation.attempts += 1
     investigation.status = "rechecking"
-    investigation.next_check_at = datetime.utcnow() + timedelta(hours=hours_until_retry)
+    investigation.next_check_at = utcnow() + timedelta(hours=hours_until_retry)
     investigation.resolution_notes = note
 
 

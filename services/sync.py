@@ -27,6 +27,7 @@ from core.config import get_settings
 from core.logging import get_logger
 from core.models import Application, CompanyDiscovery, FollowUpTask, Investigation, Lead, Listing, RecheckQueue, Signal, SourceQuery, WatchlistItem
 from core.schemas import ListingRecord, LeadResponse, SignalRecord, StatsResponse, SyncResult
+from core.time import utcnow
 from services.activity import append_lead_agent_trace, log_agent_activity, log_agent_run
 from services.ai_judges import judge_critic_with_ai, judge_fit_with_ai
 from services.company_discovery import (
@@ -366,7 +367,7 @@ def _upsert_listing(session: Session, record: ListingRecord, company_id: Optiona
             existing.last_seen_at = payload.get("last_seen_at") or datetime.now(timezone.utc)
             material_changed = True
         if material_changed:
-            existing.updated_at = datetime.utcnow()
+            existing.updated_at = utcnow()
         return existing, False
     listing = Listing(**payload)
     session.add(listing)
@@ -938,7 +939,7 @@ def _upsert_lead(
                 material_changed = True
         apply_critic_decision_to_lead(session, existing, profile)
         if material_changed:
-            existing.updated_at = datetime.utcnow()
+            existing.updated_at = utcnow()
             append_lead_agent_trace(existing, "Resolver", "surfaced lead", f"Resolver refreshed {company_name} / {title}", change_state="updated")
         return existing, False
 
@@ -1838,7 +1839,7 @@ def sync_all(
             **(row.metadata_json or {}),
             "selected_score": score,
             "selected_reasons": reasons,
-            "selected_this_cycle_at": datetime.utcnow().isoformat(),
+            "selected_this_cycle_at": utcnow().isoformat(),
             "expansion_diagnostics": expansion_diagnostics,
         }
         persist_discovery_lineage(
@@ -2164,7 +2165,7 @@ def sync_all(
                     status="open",
                     confidence=signal.hiring_confidence,
                     note="Promising weak signal without a confirmed active listing yet.",
-                    next_check_at=datetime.utcnow() + timedelta(hours=6),
+                    next_check_at=utcnow() + timedelta(hours=6),
                 )
                 if not existing_investigation:
                     investigations_opened += 1
@@ -2180,7 +2181,7 @@ def sync_all(
                     status="open",
                     confidence=signal.hiring_confidence,
                     note="Could not confidently resolve the company yet. Recheck queued.",
-                    next_check_at=datetime.utcnow() + timedelta(hours=6),
+                    next_check_at=utcnow() + timedelta(hours=6),
                 )
                 if not existing_investigation:
                     investigations_opened += 1
@@ -2249,7 +2250,7 @@ def sync_all(
         due_items = session.scalars(
             select(RecheckQueue).where(
                 RecheckQueue.status.in_(["queued", "retrying"]),
-                RecheckQueue.next_check_at <= datetime.utcnow(),
+                RecheckQueue.next_check_at <= utcnow(),
             )
         ).all()
         for item in due_items:
@@ -2620,7 +2621,7 @@ def list_leads(
             if application:
                 follow_up_task = follow_up_by_application_id.get(application.id)
                 next_action = follow_up_task.notes or "Follow up on this application." if follow_up_task else None
-                follow_up_due = bool(follow_up_task and follow_up_task.due_at <= datetime.utcnow())
+                follow_up_due = bool(follow_up_task and follow_up_task.due_at <= utcnow())
             else:
                 next_action, follow_up_due = None, False
             critic_filter_ms += (perf_counter() - critic_started) * 1000

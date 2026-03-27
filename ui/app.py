@@ -17,6 +17,7 @@ if str(ROOT) not in sys.path:
 
 from services.document_ingest import preview_resume_text, preview_resume_upload
 from core.db import SessionLocal
+from core.time import utcnow
 from services.feedback_learning import (
     REJECTION_OUTCOME_REASON_LABELS,
     REJECTION_STATUS_REASON_LABELS,
@@ -298,7 +299,7 @@ def profile_inventory_export(profile: dict[str, Any]) -> dict[str, Any]:
     return {
         "inventory_version": "v1",
         "profile_name": profile.get("name", "Demo Candidate"),
-        "generated_at": datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+        "generated_at": utcnow().replace(microsecond=0).isoformat() + "Z",
         "summary": {
             "stored_categories": sum(1 for row in inventory_rows if row["stored"]),
             "local_only_categories": sum(1 for row in inventory_rows if row["processing_path"] == "local_only"),

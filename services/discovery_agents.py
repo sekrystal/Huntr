@@ -19,8 +19,9 @@ from connectors.search_web import (
     fetch_page_snapshot,
 )
 from core.config import Settings, get_settings
-from core.models import AgentRun, Application, CandidateProfile, CompanyDiscovery, Lead
 from core.logging import get_logger
+from core.models import AgentRun, Application, CandidateProfile, CompanyDiscovery, Lead
+from core.time import utcnow
 from services.ai_judges import (
     critique_discovery_cycle_with_ai,
     interpret_discovery_page_with_ai,
@@ -285,7 +286,7 @@ def planner_agent(session: Session, profile: CandidateProfile, settings: Setting
     queries = list(dict.fromkeys((deterministic_queries + ai_queries)))[: settings.discovery_max_search_queries_per_cycle]
     structured_query_plans = _structured_discovery_plans(search_intent)
     plan = {
-        "generated_at": datetime.utcnow().isoformat(),
+        "generated_at": utcnow().isoformat(),
         "query_themes": (ai_plan or {}).get("query_themes", []),
         "role_clusters": (ai_plan or {}).get("role_clusters", query_inputs["role_families"]),
         "company_archetypes": (ai_plan or {}).get("company_archetypes", profile.preferred_domains_json or []),

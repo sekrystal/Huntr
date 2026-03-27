@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from core.config import Settings, get_settings
 from core.models import SourceQuery, WatchlistItem
+from core.time import utcnow
 
 
 def get_runtime_connector_set(settings: Settings | None = None) -> tuple[str, set[str], set[str]]:
@@ -31,7 +32,7 @@ def autonomy_enabled(settings: Settings | None = None) -> bool:
 
 def can_create_generated_queries_today(session: Session, settings: Settings | None = None, requested: int = 1) -> int:
     settings = settings or get_settings()
-    since = datetime.utcnow() - timedelta(days=1)
+    since = utcnow() - timedelta(days=1)
     existing = session.scalar(
         select(func.count(SourceQuery.id)).where(
             SourceQuery.status == "generated",
@@ -44,7 +45,7 @@ def can_create_generated_queries_today(session: Session, settings: Settings | No
 
 def can_add_watchlist_items_today(session: Session, settings: Settings | None = None, requested: int = 1) -> int:
     settings = settings or get_settings()
-    since = datetime.utcnow() - timedelta(days=1)
+    since = utcnow() - timedelta(days=1)
     existing = session.scalar(
         select(func.count(WatchlistItem.id)).where(WatchlistItem.created_at >= since)
     ) or 0

@@ -11,6 +11,7 @@ from core.config import get_settings
 from core.logging import get_logger
 from core.models import AgentRun, FollowUpTask, Investigation, Lead, Listing, RunDigest, Signal
 from core.schemas import AgentRunResponse, ListingRecord, SignalRecord
+from core.time import utcnow
 from connectors.search_web import classify_temporal_intelligence
 from services.activity import append_lead_agent_trace, log_agent_activity, log_agent_run
 from services.digests import record_run_digest
@@ -408,7 +409,7 @@ def run_scout_agent(
     enabled_connectors: set[str] | None = None,
     strict_live_connectors: set[str] | None = None,
 ) -> AgentRunResponse:
-    cycle_started_at = datetime.utcnow()
+    cycle_started_at = utcnow()
     listing_count = 0
     signal_count = 0
     inserted_listings: list[Listing] = []
@@ -824,7 +825,7 @@ def run_full_pipeline(
     enabled_connectors: set[str] | None = None,
     strict_live_connectors: set[str] | None = None,
 ) -> AgentRunResponse:
-    cycle_started_at = datetime.utcnow()
+    cycle_started_at = utcnow()
     hidden_before = {
         f"{lead.company_name} / {lead.primary_title}"
         for lead in session.scalars(select(Lead).where(Lead.hidden.is_(True))).all()

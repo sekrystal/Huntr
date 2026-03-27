@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from core.config import Settings, get_settings
 from core.models import AgentRun, ConnectorHealth, DailyDigest, FollowUpTask, Investigation, Lead, RunDigest, RuntimeControl
 from core.schemas import AutonomyDigestResponse, AutonomyHealthResponse, ConnectorHealthResponse, DailyDigestResponse
+from core.time import utcnow
 from services.connector_admin import CONNECTOR_CONFIG_KEYS, connector_blocked_reason
 from services.runtime_control import effective_worker_interval_seconds, runtime_operator_hints, runtime_phase
 
@@ -25,7 +26,7 @@ def build_autonomy_health(session: Session, settings: Settings | None = None) ->
     ) or 0
     suppressed_leads = session.scalar(select(func.count(Lead.id)).where(Lead.hidden.is_(True))) or 0
     due_follow_ups = session.scalar(
-        select(func.count(FollowUpTask.id)).where(FollowUpTask.status == "open", FollowUpTask.due_at <= datetime.utcnow())
+        select(func.count(FollowUpTask.id)).where(FollowUpTask.status == "open", FollowUpTask.due_at <= utcnow())
     ) or 0
     latest_failure_run = session.execute(
         select(AgentRun.created_at, AgentRun.summary).where(AgentRun.status == "failed").order_by(AgentRun.created_at.desc()).limit(1)

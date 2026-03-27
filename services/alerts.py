@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from core.config import Settings, get_settings
 from core.models import AgentRun, AlertEvent, Lead, RunDigest
+from core.time import utcnow
 from services.autonomy import build_autonomy_health, list_connector_health
 
 
@@ -45,7 +46,7 @@ def _record_alert(
 
 
 def _rate_limited(session: Session, alert_key: str, settings: Settings) -> bool:
-    cutoff = datetime.utcnow() - timedelta(seconds=settings.alert_window_seconds)
+    cutoff = utcnow() - timedelta(seconds=settings.alert_window_seconds)
     counted_statuses = ["logged", "sent", "failed", "disabled"]
     recent_same_key = session.scalar(
         select(func.count(AlertEvent.id)).where(
@@ -111,7 +112,7 @@ def evaluate_alerts(session: Session, settings: Settings | None = None) -> list[
                     )
                 )
             if greenhouse.status == "degraded" and greenhouse.last_success_at:
-                age_seconds = int((datetime.utcnow() - greenhouse.last_success_at).total_seconds())
+                age_seconds = int((utcnow() - greenhouse.last_success_at).total_seconds())
                 if age_seconds >= settings.alert_greenhouse_degraded_seconds:
                     alerts.append(
                         (
@@ -123,7 +124,7 @@ def evaluate_alerts(session: Session, settings: Settings | None = None) -> list[
                         )
                     )
             if not greenhouse.last_success_at or (
-                datetime.utcnow() - greenhouse.last_success_at
+                utcnow() - greenhouse.last_success_at
             ).total_seconds() >= settings.alert_no_successful_fetch_seconds:
                 alerts.append(
                     (
@@ -167,7 +168,7 @@ def evaluate_alerts(session: Session, settings: Settings | None = None) -> list[
             )
 
         if latest_digest is None or (
-            latest_digest.created_at and (datetime.utcnow() - latest_digest.created_at).total_seconds() >= settings.alert_empty_digest_seconds
+            latest_digest.created_at and (utcnow() - latest_digest.created_at).total_seconds() >= settings.alert_empty_digest_seconds
         ):
             alerts.append(
                 (
@@ -197,7 +198,7 @@ def evaluate_alerts(session: Session, settings: Settings | None = None) -> list[
         .limit(1)
     )
     if latest_worker_failure and (
-        datetime.utcnow() - latest_worker_failure.created_at
+        utcnow() - latest_worker_failure.created_at
     ).total_seconds() <= settings.alert_window_seconds:
         alerts.append(
             (

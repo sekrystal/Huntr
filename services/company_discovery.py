@@ -14,6 +14,7 @@ from connectors.search_web import SearchDiscoveryResult
 from core.config import Settings, get_settings
 from core.models import AgentRun, Application, CompanyDiscovery, ConnectorHealth, Lead, Listing
 from core.schemas import CompanyDiscoveryRowResponse, DiscoverySourceMatrixRow, DiscoveryStatusResponse
+from core.time import utcnow
 from services.connector_admin import connector_blocked_reason
 from services.ops import get_runtime_connector_set
 
@@ -337,7 +338,7 @@ def triage_candidate(
         candidate.is_new = False
         score += min(existing.utility_score, 3.0)
         if existing.last_expansion_result_count == 0 and existing.last_expanded_at:
-            cooldown_cutoff = datetime.utcnow() - timedelta(minutes=settings.discovery_company_cooldown_minutes)
+            cooldown_cutoff = utcnow() - timedelta(minutes=settings.discovery_company_cooldown_minutes)
             if existing.last_expanded_at >= cooldown_cutoff:
                 score -= 2.5
                 reasons.append("recent empty expansion cooldown")
@@ -359,7 +360,7 @@ def upsert_discovered_company(
     triage_reasons: list[str],
 ) -> tuple[CompanyDiscovery, bool]:
     row = session.scalar(select(CompanyDiscovery).where(CompanyDiscovery.discovery_key == candidate.discovery_key))
-    now = datetime.utcnow()
+    now = utcnow()
     metadata = {
         "result_url": candidate.result_url,
         "result_title": candidate.result_title,
@@ -430,7 +431,7 @@ def select_candidates_for_expansion(
             break
         if candidate.is_new and new_count >= settings.discovery_max_new_companies_per_cycle:
             continue
-        cooldown_cutoff = datetime.utcnow() - timedelta(minutes=settings.discovery_company_cooldown_minutes)
+        cooldown_cutoff = utcnow() - timedelta(minutes=settings.discovery_company_cooldown_minutes)
         if row.last_expanded_at and row.last_expansion_result_count == 0 and row.last_expanded_at >= cooldown_cutoff:
             continue
         selected.append(item)
@@ -448,7 +449,7 @@ def record_expansion_attempt(
     blocked_reason: Optional[str] = None,
     count_attempt: bool = True,
 ) -> None:
-    row.last_expanded_at = datetime.utcnow()
+    row.last_expanded_at = utcnow()
     if count_attempt:
         row.expansion_attempts += 1
     row.last_expansion_result_count = result_count
@@ -1131,7 +1132,7 @@ def annotate_source_matrix_with_truth(
 def build_discovery_status(session: Session) -> DiscoveryStatusResponse:
     from services.discovery_agents import recent_discovery_agent_runs, summarize_expansion_actions
 
-    since = datetime.utcnow() - timedelta(hours=24)
+    since = utcnow() - timedelta(hours=24)
     recent_runs = recent_discovery_agent_runs(session)
     rows = session.scalars(
         select(CompanyDiscovery)

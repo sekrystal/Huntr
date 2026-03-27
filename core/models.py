@@ -6,14 +6,11 @@ from typing import Optional
 from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
+from core.time import utcnow
+
 
 class Base(DeclarativeBase):
     pass
-
-
-def utcnow() -> datetime:
-    return datetime.utcnow()
-
 
 class Company(Base):
     __tablename__ = "companies"

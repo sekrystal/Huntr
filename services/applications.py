@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from core.models import Application, Lead
 from core.schemas import ApplicationStatusUpdate
+from core.time import utcnow
 from services.activity import append_lead_agent_trace, log_agent_activity
 
 
@@ -48,7 +49,7 @@ def get_or_create_application(session: Session, lead: Lead) -> Application:
         company_name=lead.company_name,
         title=lead.primary_title,
         current_status="saved",
-        date_saved=datetime.utcnow(),
+        date_saved=utcnow(),
     )
     session.add(application)
     session.flush()
@@ -58,7 +59,7 @@ def get_or_create_application(session: Session, lead: Lead) -> Application:
 def save_for_later(session: Session, lead: Lead) -> Application:
     application = get_or_create_application(session, lead)
     if not application.date_saved:
-        application.date_saved = datetime.utcnow()
+        application.date_saved = utcnow()
     if application.current_status not in STATUS_ORDER[1:]:
         application.current_status = "saved"
     return application
@@ -67,8 +68,8 @@ def save_for_later(session: Session, lead: Lead) -> Application:
 def mark_applied(session: Session, lead: Lead, date_applied: datetime | None = None) -> Application:
     application = get_or_create_application(session, lead)
     if not application.date_saved:
-        application.date_saved = datetime.utcnow()
-    application.date_applied = date_applied or datetime.utcnow()
+        application.date_saved = utcnow()
+    application.date_applied = date_applied or utcnow()
     application.current_status = "applied"
     return application
 
@@ -87,7 +88,7 @@ def update_application_status(session: Session, payload: ApplicationStatusUpdate
     if payload.date_applied is not None:
         application.date_applied = payload.date_applied
     elif payload.current_status == "applied" and application.date_applied is None:
-        application.date_applied = datetime.utcnow()
+        application.date_applied = utcnow()
     application.outcome_code = _resolved_outcome_code(application, payload)
     application.outcome_reason_code = payload.outcome_reason_code
     lead = session.get(Lead, payload.lead_id)

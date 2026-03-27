@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from core.config import get_settings
 from core.models import Application, CandidateProfile, FollowUpTask, SourceQueryStat, WatchlistItem
 from core.schemas import FollowUpTaskResponse, LearningViewResponse, QueryLearningRow, WatchlistItemResponse
+from core.time import utcnow
 from services.ops import can_add_watchlist_items_today
 
 
@@ -31,7 +32,7 @@ def get_or_create_query_stat(session: Session, source_type: str, query_text: str
 def increment_query_stat(session: Session, source_type: str, query_text: str, field_name: str, delta: int = 1) -> None:
     stat = get_or_create_query_stat(session, source_type=source_type, query_text=query_text)
     setattr(stat, field_name, getattr(stat, field_name) + delta)
-    stat.last_run_at = datetime.utcnow()
+    stat.last_run_at = utcnow()
 
 
 def mark_query_status(session: Session, query_text: str, source_type: str, status: str) -> None:
@@ -79,7 +80,7 @@ def generate_follow_up_tasks(session: Session, follow_up_days: int = 7) -> int:
         if not application.date_applied or application.current_status in {"offer", "rejected", "archived"}:
             continue
         due_at = application.date_applied + timedelta(days=follow_up_days)
-        if due_at > datetime.utcnow():
+        if due_at > utcnow():
             continue
         existing = session.scalar(
             select(FollowUpTask).where(
@@ -113,7 +114,7 @@ def next_action_for_application(session: Session, application_id: int) -> tuple[
     )
     if not task:
         return None, False
-    return task.notes or "Follow up on this application.", task.due_at <= datetime.utcnow()
+    return task.notes or "Follow up on this application.", task.due_at <= utcnow()
 
 
 def build_learning_view(session: Session, profile: CandidateProfile) -> LearningViewResponse:

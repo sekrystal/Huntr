@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta
+from datetime import timedelta
 from pathlib import Path
 
 from sqlalchemy import create_engine
@@ -9,6 +9,7 @@ from sqlalchemy.orm import sessionmaker
 
 from core.config import Settings
 from core.models import AgentRun, AlertEvent, Base, ConnectorHealth, RunDigest, SourceQuery, WatchlistItem
+from core.time import utcnow
 from services.alerts import evaluate_alerts
 from services.connectors_health import record_connector_failure, record_connector_success
 from services.ops import can_add_watchlist_items_today, can_create_generated_queries_today, get_runtime_connector_set
@@ -119,14 +120,14 @@ def test_connector_success_can_be_approved_for_unattended() -> None:
     row = record_connector_success(
         session,
         "greenhouse",
-        items=[{"first_published": datetime.utcnow().isoformat()}],
+        items=[{"first_published": utcnow().isoformat()}],
         mode="live",
         date_fields=["first_published"],
     )
     row = record_connector_success(
         session,
         "greenhouse",
-        items=[{"first_published": datetime.utcnow().isoformat()}],
+        items=[{"first_published": utcnow().isoformat()}],
         mode="live",
         date_fields=["first_published"],
     )

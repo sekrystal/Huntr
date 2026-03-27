@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from core.models import Company, RecheckQueue
+from core.time import utcnow
 
 
 KNOWN_ALIASES = {
@@ -72,7 +73,7 @@ def queue_recheck(session: Session, entity_type: str, entity_id: int, note: str)
     item = RecheckQueue(
         entity_type=entity_type,
         entity_id=entity_id,
-        next_check_at=datetime.utcnow() + timedelta(hours=6),
+        next_check_at=utcnow() + timedelta(hours=6),
         retry_count=0,
         status="queued",
         notes=note,

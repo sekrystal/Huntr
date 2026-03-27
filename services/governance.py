@@ -6,10 +6,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from core.models import SourceQueryStat, WatchlistItem
+from core.time import utcnow
 
 
 def evaluate_learning_governance(session: Session) -> dict[str, int]:
-    now = datetime.utcnow()
+    now = utcnow()
     promoted_queries = 0
     suppressed_queries = 0
     expired_queries = 0

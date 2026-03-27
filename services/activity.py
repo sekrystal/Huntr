@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Optional
 
 from sqlalchemy import select
@@ -9,6 +8,7 @@ from sqlalchemy.orm import Session
 from core.config import get_settings
 from core.models import AgentActivity, AgentRun, Lead
 from core.schemas import AgentActivityResponse
+from core.time import utcnow
 
 
 def append_lead_agent_trace(
@@ -22,7 +22,7 @@ def append_lead_agent_trace(
     history = list(evidence.get("agent_actions", []))
     history.append(
         {
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": utcnow().isoformat(),
             "agent": agent_name,
             "action": action,
             "summary": summary,
@@ -50,7 +50,7 @@ def log_agent_activity(
 ) -> AgentActivity:
     settings = get_settings()
     if settings.activity_dedupe_window_seconds > 0:
-        cutoff = datetime.utcnow().timestamp() - settings.activity_dedupe_window_seconds
+        cutoff = utcnow().timestamp() - settings.activity_dedupe_window_seconds
         recent = session.scalars(
             select(AgentActivity)
             .where(

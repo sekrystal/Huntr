@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Any
 
 from sqlalchemy.orm import Session
 
 from core.config import Settings
+from core.time import utcnow
 from services.activity import log_agent_activity
 from services.ops import get_runtime_connector_set
 from services.pipeline import run_full_pipeline
@@ -56,7 +56,7 @@ def run_worker_cycle(session: Session, settings: Settings) -> dict[str, Any]:
         session,
         "Worker",
         "starting cycle",
-        f"Worker cycle started at {datetime.utcnow().isoformat()} and is fetching/scoring leads.",
+        f"Worker cycle started at {utcnow().isoformat()} and is fetching/scoring leads.",
         target_type="worker",
         target_count=1,
     )
@@ -72,7 +72,7 @@ def run_worker_cycle(session: Session, settings: Settings) -> dict[str, Any]:
         session,
         "Worker",
         "completed cycle",
-        f"Worker cycle completed at {datetime.utcnow().isoformat()}. {response.summary}",
+        f"Worker cycle completed at {utcnow().isoformat()}. {response.summary}",
         target_type="worker",
         target_count=1,
     )

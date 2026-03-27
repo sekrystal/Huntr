@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from core.config import Settings, get_settings
 from core.models import RuntimeControl
 from core.schemas import RuntimeControlResponse
+from core.time import utcnow
 
 
 def get_runtime_control(session: Session, settings: Settings | None = None) -> RuntimeControl:
@@ -135,7 +136,7 @@ def set_runtime_action(session: Session, action: str, settings: Settings | None 
         control.worker_state = "idle"
         control.sleep_until = None
         control.status_message = "Single cycle requested."
-    control.last_heartbeat_at = datetime.utcnow()
+    control.last_heartbeat_at = utcnow()
     control.last_control_action = action
     control.last_control_at = control.last_heartbeat_at
     session.flush()
@@ -154,7 +155,7 @@ def determine_cycle_mode(session: Session, settings: Settings) -> tuple[str, Run
 
 
 def mark_cycle_started(control: RuntimeControl) -> None:
-    control.last_cycle_started_at = datetime.utcnow()
+    control.last_cycle_started_at = utcnow()
     control.last_heartbeat_at = control.last_cycle_started_at
     control.worker_state = "running_cycle"
     control.sleep_until = None
@@ -163,7 +164,7 @@ def mark_cycle_started(control: RuntimeControl) -> None:
 
 
 def mark_cycle_success(control: RuntimeControl, summary: str, consume_run_once: bool = True) -> None:
-    control.last_successful_cycle_at = datetime.utcnow()
+    control.last_successful_cycle_at = utcnow()
     control.last_heartbeat_at = control.last_successful_cycle_at
     control.worker_state = "idle"
     control.sleep_until = None
@@ -181,7 +182,7 @@ def mark_worker_state(
     sleep_seconds: int | None = None,
 ) -> None:
     control.worker_state = state
-    control.last_heartbeat_at = datetime.utcnow()
+    control.last_heartbeat_at = utcnow()
     control.status_message = message
     control.current_interval_seconds = max(sleep_seconds or 0, 0)
     control.sleep_until = (
@@ -193,7 +194,7 @@ def mark_worker_state(
 
 def mark_cycle_error(control: RuntimeControl, message: str) -> None:
     control.worker_state = "error"
-    control.last_heartbeat_at = datetime.utcnow()
+    control.last_heartbeat_at = utcnow()
     control.sleep_until = None
     control.current_interval_seconds = 0
     control.status_message = message
