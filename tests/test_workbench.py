@@ -265,7 +265,7 @@ def test_acceptance_docs_require_live_runtime_smoke_for_product_work() -> None:
     assert "Acceptance-Critical Validation" in readme
     assert "./scripts/runtime_self_check.sh" in readme
     assert "Live runtime smoke proof is separate from local test success." in readme
-    assert "API, worker, and primary UI path" in readme
+    assert "API, worker, and internal Streamlit harness validation" in readme
     assert "must not be marked complete without it passing against a real running stack" in readme
     assert "Acceptance-Critical Runtime Validation" in operations
     assert "./scripts/runtime_self_check.sh" in operations
@@ -464,7 +464,8 @@ def test_streamlit_jobs_shell_demotes_job_link_and_moves_operator_access_out_of_
     assert "show_operator_console" in app_source
     assert "render_operator_sidebar" in app_source
     assert 'with st.sidebar.expander("Admin / debug", expanded=False):' in sidebar_source
-    assert "Open validation tools" in sidebar_source
+    assert "internal validation and operator harness" in sidebar_source
+    assert "Open internal harness" in sidebar_source
     assert "Back to jobs shell" in sidebar_source
     assert 'with st.sidebar.expander("Operator surfaces"' not in sidebar_source
 

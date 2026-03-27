@@ -530,7 +530,7 @@ source .venv/bin/activate
 streamlit run ui/app.py --server.headless true --server.address 127.0.0.1 --server.port 8500
 ```
 
-In a third terminal, bootstrap the production JS shell:
+In a third terminal, bootstrap the primary product shell:
 
 ```bash
 cd /Users/samuelkrystal/projects/jorb/frontend
@@ -542,13 +542,14 @@ Production JS shell notes:
 
 - framework choice: Vite + React + TypeScript
 - first-run route: `http://127.0.0.1:5173/` opens a skippable lightweight setup, while `http://127.0.0.1:5173/jobs` remains directly reachable
+- primary product path: treat `http://127.0.0.1:5173/` as the default product shell during local development and demos
 - dev API wiring: the Vite proxy forwards `/api/*` to `http://127.0.0.1:8000/*`
 - backend contract pattern: the JS client reads `/opportunities`, `/candidate-profile`, and `/applications/status`
 - profile UX: onboarding and `Profile` both edit lightweight search preferences for target roles, geography, and work mode without exposing operator-heavy internals
-- Streamlit remains the temporary validation harness at `http://127.0.0.1:8500`
-- the default Streamlit shell is jobs-first, with `Jobs`, `Saved`, `Applied`, and `Profile` kept primary
+- Streamlit is the internal validation and operator harness at `http://127.0.0.1:8500`
+- the Streamlit shell is no longer the product default; use it for validation, debugging, and operator-only workflows
 - the Streamlit `Profile` setup is optional, so operators can defer resume or LinkedIn-adjacent imports while validating the real-job path first
-- operator-heavy surfaces move behind the separate `Open operator console` path instead of sharing the default user-facing shell
+- operator-heavy surfaces stay behind the separate internal harness path instead of sharing the product-facing shell
 - the JS shell intentionally does not expose `source matrix`, `discovery internals`, `learning`, `autonomy ops`, `agent activity`, `investigations`, `diagnostics`, or `operator controls` as product entry points
 
 Portable SQLite config:
@@ -607,9 +608,9 @@ Minimum live smoke evidence for product-path acceptance:
 
 - API: `/health`, `/autonomy-status`, `/runtime-control`, `/discovery-status`, and `/opportunities` respond successfully
 - worker: a live `scripts/run_worker.py` process is running and `POST /runtime-control` with `{"action":"run_once"}` succeeds
-- primary UI path: the default Streamlit workbench responds on `http://127.0.0.1:8500`
+- internal harness reachability: the secondary Streamlit validation harness responds on `http://127.0.0.1:8500`
 
-`./scripts/runtime_self_check.sh` is the minimum required evidence recorder for API, worker, and primary UI path validation. It does not replace manual product judgment, but acceptance-critical product work must not be marked complete without it passing against a real running stack.
+`./scripts/runtime_self_check.sh` is the minimum required evidence recorder for API, worker, and internal Streamlit harness validation. It does not replace manual product judgment, and it does not by itself prove the JS product shell, but acceptance-critical product work must not be marked complete without it passing against a real running stack.
 
 ## Employer Demo Flow
 
@@ -628,7 +629,7 @@ Minimum live smoke evidence for product-path acceptance:
 
 - live X ingestion is still intentionally limited
 - PDF extraction depends on text being extractable from the source PDF
-- Streamlit provides a practical workbench, not a full spreadsheet engine
+- Streamlit provides an internal validation harness, not the primary product shell
 - the production JS shell now carries the jobs-first screen, while operator-heavy workflows still remain in Streamlit
 - scheduled autonomy is local and sequential, not distributed infrastructure
 - unattended demo mode is reasonable for bounded local cycles, but still benefits from human review before long-running live use

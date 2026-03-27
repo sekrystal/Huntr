@@ -1014,7 +1014,7 @@ def render_user_job_link_form() -> None:
 
 def render_profile_tab(profile: dict[str, Any], learning: dict[str, Any]) -> None:
     st.subheader("Onboarding")
-    st.caption("Optional setup for the validation harness: add a resume, review the profile, and pick a target role when you need it.")
+    st.caption("Optional setup for the internal validation harness: add a resume, review the profile, and pick a target role when you need it.")
     latest_resume_ingest = st.session_state.get("latest_resume_ingest")
     draft_profile = st.session_state.get("onboarding_profile_draft")
     onboarding_deferred = bool(st.session_state.get(ONBOARDING_DEFERRED_STATE_KEY, False))
@@ -1027,7 +1027,7 @@ def render_profile_tab(profile: dict[str, Any], learning: dict[str, Any]) -> Non
             st.session_state[ONBOARDING_DEFERRED_STATE_KEY] = False
             st.rerun()
     elif not onboarding_state["resume_complete"]:
-        st.caption("Resume upload is optional in this temporary harness.")
+        st.caption("Resume upload is optional in this internal harness.")
         if st.button("Skip setup for now", use_container_width=True):
             st.session_state[ONBOARDING_DEFERRED_STATE_KEY] = True
             st.rerun()

@@ -137,13 +137,18 @@ def test_connector_success_can_be_approved_for_unattended() -> None:
 def test_frontend_shell_uses_product_first_routes_and_streamlit_secondary_path() -> None:
     router_source = Path("frontend/src/router.tsx").read_text()
     shell_source = Path("frontend/src/shell/AppShell.tsx").read_text()
+    validation_source = Path("frontend/src/views/ValidationHarnessPage.tsx").read_text()
 
     assert 'Navigate to="/jobs"' in router_source
     assert '{ path: "jobs", element: <JobsPage /> }' in router_source
     assert '{ path: "validation-harness", element: <ValidationHarnessPage /> }' in router_source
     assert "Agent Activity" not in shell_source
     assert "Autonomy Ops" not in shell_source
-    assert "Validation Harness" in shell_source
+    assert "Primary product shell" in shell_source
+    assert "Streamlit is reserved for internal validation and operator workflows." in shell_source
+    assert "Internal Harness" in shell_source
+    assert "Streamlit is now the internal validation and operator harness" in validation_source
+    assert "operator-only surfaces" in validation_source
 
 
 def test_frontend_shell_dev_wiring_targets_existing_fastapi_backend() -> None:
@@ -158,7 +163,8 @@ def test_frontend_shell_dev_wiring_targets_existing_fastapi_backend() -> None:
     assert "/opportunities" in api_client
     assert '"/candidate-profile"' in api_client
     assert '"/applications/status"' in api_client
-    assert "Streamlit remains the temporary validation harness" in readme
+    assert "primary product path: treat `http://127.0.0.1:5173/` as the default product shell during local development and demos" in readme
+    assert "Streamlit is the internal validation and operator harness at `http://127.0.0.1:8500`" in readme
 
 
 def test_runtime_self_check_requires_live_stack_evidence() -> None:

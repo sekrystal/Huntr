@@ -14,7 +14,7 @@ export function AppShell() {
         <div className="sidebar-brand">
           <p className="eyebrow">JORB</p>
           <h1>Opportunity Scout</h1>
-          <p className="sidebar-copy">Jobs-first workbench for reviewing surfaced opportunities.</p>
+          <p className="sidebar-copy">Primary product shell for reviewing surfaced opportunities and managing tracker state.</p>
         </div>
         <nav className="nav-list" aria-label="Primary">
           {navigation.map((item) => (
@@ -30,7 +30,7 @@ export function AppShell() {
         </nav>
         <div className="sidebar-status">
           <p className="status-label">System Status</p>
-          <p className="status-copy">FastAPI-backed jobs feed. Operator-heavy surfaces stay out of the main nav.</p>
+          <p className="status-copy">FastAPI-backed product routes stay primary here. Streamlit is reserved for internal validation and operator workflows.</p>
           <div className="sidebar-links">
             <NavLink className="sidebar-link" to="/welcome">
               Quick setup
@@ -39,7 +39,7 @@ export function AppShell() {
               API docs
             </a>
             <NavLink className="sidebar-link" to="/validation-harness">
-              Validation Harness
+              Internal Harness
             </NavLink>
           </div>
         </div>

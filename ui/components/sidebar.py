@@ -127,8 +127,8 @@ def render_sidebar(
     primary_page = st.sidebar.radio("Navigate", PRIMARY_PAGES, index=0, label_visibility="collapsed")
     _render_system_status(stats=stats, runtime=runtime, health=health)
     with st.sidebar.expander("Admin / debug", expanded=False):
-        st.caption("Open validation tools without changing the jobs-first shell.")
-        open_operator_console = st.button("Open validation tools", use_container_width=True)
+        st.caption("Open the internal validation and operator harness without changing the jobs-first shell.")
+        open_operator_console = st.button("Open internal harness", use_container_width=True)
     return primary_page, open_operator_console
 
 
