@@ -11,6 +11,7 @@ from api.routes.feedback import router as feedback_router
 from api.routes.health import router as health_router
 from api.routes.opportunities import router as opportunities_router
 from api.routes.profile import router as profile_router
+from api.routes.search_runs import router as search_runs_router
 from core.db import get_db, init_db
 from core.logging import configure_logging
 from core.schemas import StatsResponse, SyncResult
@@ -37,6 +38,7 @@ app.include_router(feedback_router)
 app.include_router(applications_router)
 app.include_router(profile_router)
 app.include_router(agents_router)
+app.include_router(search_runs_router)
 
 
 @app.get("/")

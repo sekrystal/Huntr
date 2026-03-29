@@ -6,7 +6,10 @@ from pathlib import Path
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 
+from api.main import app
+from api.routes.search_runs import latest_search_run
 from core.config import Settings
 from core.models import AgentRun, AlertEvent, Base, ConnectorHealth, RunDigest, SearchRun, SourceQuery, WatchlistItem
 from core.time import utcnow
@@ -16,7 +19,11 @@ from services.ops import can_add_watchlist_items_today, can_create_generated_que
 
 
 def build_session():
-    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
     Base.metadata.create_all(engine)
     return sessionmaker(bind=engine, expire_on_commit=False)()
 
@@ -84,6 +91,69 @@ def test_runtime_schema_creates_search_runs_table() -> None:
     session.add(SearchRun(worker_name="search"))
     session.flush()
     assert session.query(SearchRun).count() == 1
+
+
+def test_search_runs_latest_endpoint_is_registered() -> None:
+    assert any(getattr(route, "path", None) == "/search-runs/latest" for route in app.routes)
+
+
+def test_search_runs_latest_endpoint_returns_null_when_no_runs_exist() -> None:
+    session = build_session()
+    try:
+        assert latest_search_run(session) is None
+    finally:
+        session.close()
+
+
+def test_search_runs_latest_endpoint_returns_most_recent_run() -> None:
+    session = build_session()
+    session.add(
+        SearchRun(
+            worker_name="search",
+            provider="duckduckgo_html",
+            status="empty",
+            query_count=1,
+            result_count=0,
+            queries_json=["older query"],
+        )
+    )
+    session.flush()
+    latest = SearchRun(
+        worker_name="search",
+        provider="duckduckgo_html",
+        status="results",
+        live=True,
+        query_count=2,
+        result_count=5,
+        queries_json=["latest query one", "latest query two"],
+        diagnostics_json={"status": "results"},
+    )
+    session.add(latest)
+    session.flush()
+
+    try:
+        response = latest_search_run(session)
+    finally:
+        session.close()
+
+    assert response is not None
+    payload = response.model_dump(mode="json") if hasattr(response, "model_dump") else json.loads(response.json())
+    assert payload == {
+        "id": latest.id,
+        "source_key": "search_web",
+        "worker_name": "search",
+        "provider": "duckduckgo_html",
+        "status": "results",
+        "live": True,
+        "zero_yield": False,
+        "query_count": 2,
+        "result_count": 5,
+        "queries": ["latest query one", "latest query two"],
+        "failure_classification": None,
+        "error": None,
+        "diagnostics_json": {"status": "results"},
+        "created_at": latest.created_at.isoformat().replace("+00:00", "Z"),
+    }
 
 
 def test_alerts_record_greenhouse_incident_and_rate_limit() -> None:

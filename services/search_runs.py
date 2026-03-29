@@ -65,3 +65,25 @@ def list_recent_search_runs(session: Session, *, limit: int = 12) -> list[Search
         )
         for row in rows
     ]
+
+
+def get_latest_search_run(session: Session) -> SearchRunResponse | None:
+    row = session.scalar(select(SearchRun).order_by(SearchRun.created_at.desc(), SearchRun.id.desc()).limit(1))
+    if row is None:
+        return None
+    return SearchRunResponse(
+        id=row.id,
+        source_key=row.source_key,
+        worker_name=row.worker_name,
+        provider=row.provider,
+        status=row.status,
+        live=row.live,
+        zero_yield=row.zero_yield,
+        query_count=row.query_count,
+        result_count=row.result_count,
+        queries=list(row.queries_json or []),
+        failure_classification=row.failure_classification,
+        error=row.error,
+        diagnostics_json=dict(row.diagnostics_json or {}),
+        created_at=row.created_at,
+    )
