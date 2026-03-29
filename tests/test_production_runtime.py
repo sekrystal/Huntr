@@ -95,6 +95,9 @@ def test_runtime_schema_creates_search_runs_table() -> None:
 
 def test_search_runs_latest_endpoint_is_registered() -> None:
     assert any(getattr(route, "path", None) == "/search-runs/latest" for route in app.routes)
+    schema = app.openapi()
+    assert "/search-runs/latest" in schema["paths"]
+    assert "get" in schema["paths"]["/search-runs/latest"]
 
 
 def test_search_runs_latest_endpoint_returns_null_when_no_runs_exist() -> None:
@@ -154,7 +157,6 @@ def test_search_runs_latest_endpoint_returns_most_recent_run() -> None:
         "diagnostics_json": {"status": "results"},
         "created_at": latest.created_at.isoformat().replace("+00:00", "Z"),
     }
-
 
 def test_alerts_record_greenhouse_incident_and_rate_limit() -> None:
     session = build_session()
