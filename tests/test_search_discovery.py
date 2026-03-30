@@ -470,6 +470,45 @@ def test_record_search_run_persists_observable_runtime_object() -> None:
     assert status.recent_search_runs[0].queries == ['"chief of staff" startup careers']
 
 
+def test_record_search_run_persists_explicit_ats_source_key() -> None:
+    session = build_session()
+    execution = ats_resolver_worker(
+        {
+            "queries": [],
+            "structured_query_plans": {
+                "ats": [
+                    {
+                        "query_text": 'site:job-boards.greenhouse.io "chief of staff"',
+                        "executable": True,
+                    }
+                ],
+                "search": [],
+                "weak_signal": [],
+            },
+        },
+        settings=Settings(discovery_max_search_queries_per_cycle=4),
+        fetcher=lambda query_texts: (
+            [
+                SearchDiscoveryResult(
+                    query_text=query_texts[0],
+                    title="Chief of Staff - Example",
+                    url="https://job-boards.greenhouse.io/example/jobs/1",
+                )
+            ],
+            True,
+        ),
+    )
+
+    row = record_search_run(session, execution, source_key="search_web_ats", provider="duckduckgo_html")
+    status = build_discovery_status(session)
+
+    persisted = session.get(SearchRun, row.id)
+    assert persisted is not None
+    assert persisted.source_key == "search_web_ats"
+    assert status.recent_search_runs[0].source_key == "search_web_ats"
+    assert status.recent_search_runs[0].worker_name == "ats_resolver"
+
+
 def test_classify_query_family_captures_existing_query_mix() -> None:
     assert classify_query_family('site:job-boards.greenhouse.io "chief of staff"') == "ats_direct"
     assert classify_query_family('"Acme" "chief of staff" careers') == "company_targeted"

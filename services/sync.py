@@ -133,10 +133,17 @@ def _record_source_runtime_observer(
         entry["last_status"] = status
 
 
-def _search_fetch_diagnostics(connector: SearchDiscoveryConnector, search_queries: list[str]) -> dict[str, object]:
+def _search_fetch_diagnostics(
+    connector: SearchDiscoveryConnector,
+    search_queries: list[str],
+    execution=None,
+) -> dict[str, object]:
     diagnostics = dict(getattr(connector, "last_fetch_diagnostics", {}) or {})
+    if not diagnostics and execution is not None:
+        diagnostics = dict(getattr(execution, "diagnostics", {}) or {})
     if diagnostics:
         diagnostics.setdefault("query_count", len(search_queries))
+        diagnostics.setdefault("result_count", len(getattr(execution, "results", []) or []))
         diagnostics.setdefault("fallback_order", ["provider_query", "provider_failover_rewrite", "scrape_parse_extraction"])
         return diagnostics
     return {
@@ -146,6 +153,77 @@ def _search_fetch_diagnostics(connector: SearchDiscoveryConnector, search_querie
         "result_count": 0,
         "fallback_order": ["provider_query", "provider_failover_rewrite", "scrape_parse_extraction"],
     }
+
+
+def _combine_search_worker_diagnostics(
+    *,
+    ats_execution,
+    ats_diagnostics: dict[str, object],
+    search_execution,
+    search_diagnostics: dict[str, object],
+    combined_results: list[SearchDiscoveryResult],
+) -> dict[str, object]:
+    fallback_order = list(
+        dict.fromkeys(
+            [
+                *list(ats_diagnostics.get("fallback_order") or []),
+                *list(search_diagnostics.get("fallback_order") or []),
+            ]
+        )
+    )
+    worker_diagnostics = {
+        "ats_resolver": dict(ats_diagnostics),
+        "search": dict(search_diagnostics),
+    }
+    worker_statuses = [
+        str(ats_diagnostics.get("status") or "not_run"),
+        str(search_diagnostics.get("status") or "not_run"),
+    ]
+    failure_classification = None
+    error = None
+    if combined_results:
+        status = "results"
+        if any(item in {"failed", "empty"} for item in worker_statuses):
+            failure_classification = "partial_failure"
+    elif "failed" in worker_statuses:
+        status = "failed"
+        failure_classification = (
+            str(ats_diagnostics.get("failure_classification") or "")
+            or str(search_diagnostics.get("failure_classification") or "")
+            or "search_runtime_error"
+        )
+        error = (
+            str(ats_diagnostics.get("error") or "")
+            or str(search_diagnostics.get("error") or "")
+            or None
+        )
+    elif any(status in {"empty", "results"} for status in worker_statuses):
+        status = "empty"
+        failure_classification = (
+            str(ats_diagnostics.get("failure_classification") or "")
+            or str(search_diagnostics.get("failure_classification") or "")
+            or "search_zero_yield"
+        )
+    else:
+        status = "not_run"
+    diagnostics = {
+        "status": status,
+        "failure_classification": failure_classification or None,
+        "error": error,
+        "query_count": len(ats_execution.query_texts) + len(search_execution.query_texts),
+        "result_count": len(combined_results),
+        "fallback_order": fallback_order
+        or ["provider_query", "provider_failover_rewrite", "scrape_parse_extraction"],
+        "worker_diagnostics": worker_diagnostics,
+    }
+    if status == "empty":
+        zero_yield_queries = [
+            *list(ats_diagnostics.get("zero_yield_queries") or []),
+            *list(search_diagnostics.get("zero_yield_queries") or []),
+        ]
+        diagnostics["zero_yield_attempt_count"] = len(zero_yield_queries)
+        diagnostics["zero_yield_queries"] = zero_yield_queries[:10]
+    return diagnostics
 
 
 def _search_zero_yield_summary(search_diagnostics: dict[str, object]) -> dict[str, object] | None:
@@ -1046,9 +1124,10 @@ def sync_all(
     new_discovery_count = 0
 
     if settings.search_discovery_enabled and search_queries:
+        ats_connector = SearchDiscoveryConnector()
         ats_execution = ats_resolver_worker(
             planner_plan,
-            connector=SearchDiscoveryConnector(),
+            connector=ats_connector,
             settings=settings,
             require_live="search_web" in strict_live_connectors,
         )
@@ -1064,30 +1143,10 @@ def sync_all(
                 date_fields=[],
             )[:2],
         )
-        record_search_run(session, ats_execution)
-        record_search_run(session, search_execution)
+        record_search_run(session, ats_execution, source_key="search_web_ats")
+        record_search_run(session, search_execution, source_key="search_web")
+        ats_diagnostics = _search_fetch_diagnostics(ats_connector, ats_execution.query_texts, ats_execution)
         search_results = search_execution.results
-        search_live = search_execution.live
-        search_diagnostics = _search_fetch_diagnostics(search_connector, search_execution.query_texts)
-        cycle_metrics["search_fetch_diagnostics"] = search_diagnostics
-        zero_yield_summary = _search_zero_yield_summary(search_diagnostics)
-        _record_source_runtime_observer(
-            source_runtime_observer,
-            "search_web",
-            attempted=bool(search_execution.query_texts),
-            failed=search_diagnostics.get("status") == "failed",
-            zero_yield=zero_yield_summary is not None,
-            yielded_results=len(search_execution.results),
-            fallback_order=list(search_diagnostics.get("fallback_order") or []),
-            status=(
-                "success"
-                if search_execution.results and search_diagnostics.get("status") == "not_run"
-                else str(search_diagnostics.get("status") or "not_run")
-            ),
-        )
-        if zero_yield_summary is not None:
-            cycle_metrics["search_zero_yield"] = zero_yield_summary
-            logger.warning("[DISCOVERY_SEARCH_ZERO_YIELD] %s", zero_yield_summary)
         if ats_execution.results:
             deduped_seed_results: list[SearchDiscoveryResult] = []
             seen_seed_urls: set[str] = set()
@@ -1097,6 +1156,34 @@ def sync_all(
                 seen_seed_urls.add(result.url)
                 deduped_seed_results.append(result)
             search_results = deduped_seed_results
+        search_live = search_execution.live or ats_execution.live
+        search_diagnostics = _search_fetch_diagnostics(search_connector, search_execution.query_texts, search_execution)
+        combined_search_diagnostics = _combine_search_worker_diagnostics(
+            ats_execution=ats_execution,
+            ats_diagnostics=ats_diagnostics,
+            search_execution=search_execution,
+            search_diagnostics=search_diagnostics,
+            combined_results=search_results,
+        )
+        cycle_metrics["search_fetch_diagnostics"] = combined_search_diagnostics
+        zero_yield_summary = _search_zero_yield_summary(combined_search_diagnostics)
+        _record_source_runtime_observer(
+            source_runtime_observer,
+            "search_web",
+            attempted=bool(ats_execution.query_texts or search_execution.query_texts),
+            failed=combined_search_diagnostics.get("status") == "failed",
+            zero_yield=zero_yield_summary is not None,
+            yielded_results=len(search_results),
+            fallback_order=list(combined_search_diagnostics.get("fallback_order") or []),
+            status=(
+                "success"
+                if search_results
+                else str(combined_search_diagnostics.get("status") or "not_run")
+            ),
+        )
+        if zero_yield_summary is not None:
+            cycle_metrics["search_zero_yield"] = zero_yield_summary
+            logger.warning("[DISCOVERY_SEARCH_ZERO_YIELD] %s", zero_yield_summary)
         parser_execution = parser_acquisition_worker(search_results, settings=settings, extractor=extractor_agent)
         extractions = parser_execution.extractions or []
         derived_results = parser_execution.derived_results or []

@@ -628,6 +628,89 @@ def test_sync_all_surfaces_yc_jobs_listing_from_search_discovery(monkeypatch) ->
     assert (lead.evidence_json or {})["source_lineage"] == "yc_jobs+search_web"
 
 
+def test_sync_all_treats_ats_seed_results_as_search_acquisition_success(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(engine)
+    session = sessionmaker(bind=engine, expire_on_commit=False)()
+
+    ingest_resume(
+        session,
+        filename="resume.txt",
+        raw_text="Operator with chief of staff and founding operations experience.",
+    )
+
+    settings = Settings(
+        demo_mode=True,
+        search_discovery_enabled=True,
+        discovery_max_search_queries_per_cycle=4,
+        discovery_max_expansions_per_cycle=4,
+        discovery_max_new_companies_per_cycle=4,
+        openai_enabled=False,
+    )
+
+    monkeypatch.setattr("services.sync.get_settings", lambda: settings)
+    monkeypatch.setattr(
+        "services.sync.planner_agent",
+        lambda *_args, **_kwargs: {
+            "queries": ['"chief of staff" startup careers'],
+            "structured_query_plans": {
+                "ats": [
+                    {
+                        "query_text": 'site:job-boards.greenhouse.io "chief of staff"',
+                        "executable": True,
+                    }
+                ],
+                "search": [
+                    {
+                        "query_text": '"chief of staff" startup careers',
+                        "executable": True,
+                    }
+                ],
+                "weak_signal": [],
+            },
+            "query_themes": [],
+            "company_archetypes": [],
+            "priority_notes": [],
+        },
+    )
+
+    def fake_search_fetch(self, queries, require_live=False):
+        if queries and queries[0].startswith("site:job-boards.greenhouse.io"):
+            return (
+                [
+                    SearchDiscoveryResult(
+                        query_text=queries[0],
+                        title="Chief of Staff - Acme",
+                        url="https://job-boards.greenhouse.io/acme/jobs/1",
+                        source_surface="search_web",
+                        query_family="ats_direct",
+                    )
+                ],
+                True,
+            )
+        return ([], True)
+
+    monkeypatch.setattr("services.sync.SearchDiscoveryConnector.fetch", fake_search_fetch)
+    monkeypatch.setattr("services.sync.GreenhouseConnector.fetch", lambda self, *_args, **_kwargs: ([], False))
+    monkeypatch.setattr("services.sync.AshbyConnector.fetch", lambda self, *_args, **_kwargs: ([], False))
+    monkeypatch.setattr("services.sync.XSearchConnector.fetch", lambda self, *_args, **_kwargs: ([], False))
+
+    result = sync_all(session, include_rechecks=False, enabled_connectors={"search_web"})
+    session.commit()
+
+    cycle_metrics = result.discovery_status["cycle_metrics"]
+    assert "search_zero_yield" not in cycle_metrics
+    assert cycle_metrics["search_fetch_diagnostics"]["status"] == "results"
+    assert cycle_metrics["search_fetch_diagnostics"]["result_count"] == 1
+    assert cycle_metrics["search_fetch_diagnostics"]["worker_diagnostics"]["ats_resolver"]["status"] == "results"
+    assert cycle_metrics["search_fetch_diagnostics"]["worker_diagnostics"]["search"]["status"] == "empty"
+    assert result.discovery_status["source_matrix"]
+    source_truth = {item["source_key"]: item for item in result.discovery_status["source_matrix"]}
+    assert source_truth["search_web"]["ran"] is True
+    assert source_truth["search_web"]["zero_yield"] is False
+    assert source_truth["search_web"]["yielded_results_count"] == 1
+
+
 def test_build_discovery_status_surfaces_verified_ranked_agentic_jobs() -> None:
     engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
     Base.metadata.create_all(engine)
