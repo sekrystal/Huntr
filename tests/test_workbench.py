@@ -741,6 +741,22 @@ def test_build_search_state_view_model_reports_success_state() -> None:
     assert "found 5 jobs across 2 queries" in view_model["detail"]
 
 
+def test_build_search_state_view_model_requires_zero_yield_truth_for_zero_result_copy() -> None:
+    view_model = build_search_state_view_model(
+        {
+            "status": "results",
+            "query_count": 2,
+            "result_count": 0,
+            "zero_yield": False,
+            "created_at": "2026-03-29T12:30:00Z",
+        }
+    )
+
+    assert view_model["tone"] == "success"
+    assert view_model["title"] == "Search finished successfully."
+    assert "found 0 jobs across 2 queries" in view_model["detail"]
+
+
 def test_render_search_status_region_renders_inline_jobs_status(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
@@ -801,6 +817,24 @@ def test_build_jobs_empty_state_view_model_reports_running_search() -> None:
 
     assert view_model["title"] == "Search is running."
     assert "current run finishes" in view_model["detail"]
+
+
+def test_build_jobs_empty_state_view_model_uses_search_run_truth_for_zero_results() -> None:
+    view_model = build_jobs_empty_state_view_model(
+        {
+            "status": "results",
+            "query_count": 2,
+            "result_count": 0,
+            "zero_yield": False,
+            "created_at": "2026-03-29T12:30:00Z",
+        },
+        total_job_count=0,
+        filters={"search": "", "location": "", "remote_only": False},
+    )
+
+    assert view_model["title"] == "Search finished successfully."
+    assert "found 0 jobs across 2 queries" in view_model["detail"]
+    assert view_model["show_clear_filters"] is False
 
 
 def test_runtime_surface_payload_prefers_health_truth_and_merges_summaries() -> None:

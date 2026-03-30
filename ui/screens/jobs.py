@@ -11,6 +11,13 @@ from ui.components.job_card import render_job_card
 from ui.components.topbar import render_jobs_topbar
 
 
+def _search_run_finished_with_zero_results(search_run: dict[str, Any]) -> bool:
+    status = str(search_run.get("status") or "").strip().lower()
+    if bool(search_run.get("zero_yield")):
+        return True
+    return status in {"empty", "zero_yield"}
+
+
 def build_search_state_view_model(search_run: dict[str, Any] | None) -> dict[str, str]:
     if not search_run:
         return {
@@ -44,7 +51,7 @@ def build_search_state_view_model(search_run: dict[str, Any] | None) -> dict[str
             "detail": "Jobs will update here when the current run finishes.",
         }
 
-    if search_run.get("zero_yield") or status in {"empty", "zero_yield"} or result_count == 0:
+    if _search_run_finished_with_zero_results(search_run):
         return {
             "tone": "warning",
             "title": "Search finished with no matching jobs.",
@@ -120,7 +127,8 @@ def build_jobs_empty_state_view_model(
         }
 
     search_state = build_search_state_view_model(search_run)
-    if search_state["tone"] == "success":
+    result_count = int((search_run or {}).get("result_count") or 0)
+    if search_state["tone"] == "success" and result_count > 0:
         return {
             "title": "Search finished, but no jobs are visible yet.",
             "detail": search_state["detail"],
