@@ -13,12 +13,16 @@ def render_job_card_styles() -> None:
             background: #ffffff;
             border: 1px solid rgba(15, 23, 42, 0.10);
             border-radius: 16px;
-            padding: 1rem 1.05rem;
+            padding: 1rem 1.05rem 0.85rem 1.05rem;
             margin-bottom: 0.9rem;
             box-shadow: 0 6px 16px rgba(15, 23, 42, 0.04);
         }
         .jorb-job-card.saved { border-color: rgba(59, 130, 246, 0.35); }
         .jorb-job-card.applied { border-color: rgba(16, 185, 129, 0.35); }
+        .jorb-job-card.selected {
+            border-color: rgba(15, 23, 42, 0.25);
+            box-shadow: 0 10px 24px rgba(15, 23, 42, 0.08);
+        }
         .jorb-job-title { font-size: 1.1rem; font-weight: 600; color: #111827; margin-bottom: 0.2rem; }
         .jorb-job-meta { color: #4b5563; font-size: 0.9rem; display: flex; flex-wrap: wrap; gap: 0.45rem; margin-bottom: 0.65rem; }
         .jorb-job-desc { color: #4b5563; font-size: 0.92rem; margin-bottom: 0.7rem; }
@@ -59,6 +63,7 @@ def render_job_card_styles() -> None:
         .jorb-job-fallback { color: #9ca3af; font-style: italic; }
         .jorb-job-state { color: #2563eb; font-size: 0.76rem; margin-bottom: 0.4rem; font-weight: 600; }
         .jorb-job-state.applied { color: #059669; }
+        .jorb-job-state.new { color: #6b7280; }
         </style>
         """,
         unsafe_allow_html=True,
@@ -80,20 +85,22 @@ def _state_label(job: dict[str, Any]) -> str:
         return '<div class="jorb-job-state">Saved</div>'
     if state == "applied":
         return '<div class="jorb-job-state applied">Applied</div>'
-    return ""
+    return '<div class="jorb-job-state new">New</div>'
 
 
 def render_job_card(
     job: dict[str, Any],
     *,
     page_key: str,
+    selected: bool,
     on_open: Callable[[], None],
     on_save: Callable[[], None],
     on_apply: Callable[[], None],
     on_dismiss: Callable[[], None],
 ) -> None:
     render_job_card_styles()
-    card_class = f"jorb-job-card {job.get('state', 'new')}"
+    selected_class = " selected" if selected else ""
+    card_class = f"jorb-job-card {job.get('state', 'new')}{selected_class}"
     description = job.get("description") or '<span class="jorb-job-fallback">TODO: backend did not return a short description.</span>'
     work_mode = job.get("work_mode") or "TODO work mode"
     tags = "".join(f'<span class="jorb-job-tag">{tag}</span>' for tag in job.get("tags", [])[:4])
@@ -103,8 +110,7 @@ def render_job_card(
         for item in [
             job.get("posted_date"),
             job.get("salary"),
-            f"Source: {job.get('source')}" if job.get("source") else None,
-            f"Provenance: {job.get('source_provenance')}" if job.get("source_provenance") else None,
+            job.get("source"),
         ]
         if item
     )
@@ -134,8 +140,8 @@ def render_job_card(
         """,
         unsafe_allow_html=True,
     )
-    action_cols = st.columns([1.15, 1, 1, 1.1])
-    if action_cols[0].button("Open details", key=f"open-{page_key}-{job['id']}", use_container_width=True):
+    action_cols = st.columns([1.1, 1, 1, 1])
+    if action_cols[0].button("Details", key=f"open-{page_key}-{job['id']}", use_container_width=True):
         on_open()
     if action_cols[1].button("Save", key=f"save-{page_key}-{job['id']}", use_container_width=True, disabled=job.get("state") == "saved"):
         on_save()

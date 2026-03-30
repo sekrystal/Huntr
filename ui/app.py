@@ -1647,19 +1647,11 @@ def main() -> None:
         if open_operator_console:
             set_operator_console(True)
             st.rerun()
-
-        with st.sidebar.expander("Advanced filters", expanded=False):
-            freshness_choice = st.selectbox("Default freshness window", ["7 days", "14 days", "all"], index=1)
-            lead_visibility = st.toggle("Show signal-only leads", value=False)
-            include_hidden = st.toggle("Show hidden leads", value=False)
-            include_unqualified = st.toggle("Show under or overqualified", value=False)
-
-        freshness_map = {"7 days": 7, "14 days": 14, "all": 0}
         base_query = build_query(
-            freshness_days=freshness_map[freshness_choice],
-            include_hidden=include_hidden,
-            include_unqualified=include_unqualified,
-            include_signal_only=lead_visibility,
+            freshness_days=14,
+            include_hidden=False,
+            include_unqualified=False,
+            include_signal_only=False,
         )
 
     if operator_console_enabled():
@@ -1694,11 +1686,11 @@ def main() -> None:
     elif primary_page == "Saved":
         saved = fetch_json(
             build_query(
-                freshness_days=freshness_map[freshness_choice],
-                include_hidden=include_hidden,
-                include_unqualified=include_unqualified,
+                freshness_days=14,
+                include_hidden=False,
+                include_unqualified=False,
                 only_saved=True,
-                include_signal_only=lead_visibility,
+                include_signal_only=False,
             )
         )["items"]
         render_jobs_screen(
@@ -1712,11 +1704,11 @@ def main() -> None:
     elif primary_page == "Applied":
         applied = fetch_json(
             build_query(
-                freshness_days=freshness_map[freshness_choice],
-                include_hidden=include_hidden,
-                include_unqualified=include_unqualified,
+                freshness_days=14,
+                include_hidden=False,
+                include_unqualified=False,
                 only_applied=True,
-                include_signal_only=lead_visibility,
+                include_signal_only=False,
             )
         )["items"]
         render_jobs_screen(

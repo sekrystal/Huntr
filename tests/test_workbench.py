@@ -498,16 +498,20 @@ def test_streamlit_primary_navigation_keeps_product_pages_separate_from_operator
 def test_streamlit_jobs_shell_demotes_job_link_and_moves_operator_access_out_of_primary_nav() -> None:
     app_source = Path("ui/app.py").read_text()
     sidebar_source = Path("ui/components/sidebar.py").read_text()
+    jobs_source = Path("ui/screens/jobs.py").read_text()
 
     assert 'with st.expander("Add a job link", expanded=False):' in app_source
     assert app_source.index('render_jobs_screen(') < app_source.index('with st.expander("Add a job link", expanded=False):')
     assert "show_operator_console" in app_source
     assert "render_operator_sidebar" in app_source
+    assert 'with st.sidebar.expander("Advanced filters", expanded=False):' not in app_source
     assert 'with st.sidebar.expander("Admin / debug", expanded=False):' in sidebar_source
     assert "internal validation and operator harness" in sidebar_source
     assert "Open internal harness" in sidebar_source
     assert "Back to jobs shell" in sidebar_source
     assert 'with st.sidebar.expander("Operator surfaces"' not in sidebar_source
+    assert 'with st.expander("Backend/UI field gaps", expanded=False):' not in jobs_source
+    assert 'st.button("Run manual search"' not in jobs_source
 
 
 def test_rejection_feedback_summary_surfaces_structured_buckets() -> None:
@@ -701,7 +705,7 @@ def test_build_job_view_model_exposes_explicit_source_and_provenance_fields() ->
 
     assert job["source"] == "yc_jobs"
     assert job["source_provenance"] == "yc_jobs+search_web"
-    assert "yc_jobs+search_web" in job["tags"]
+    assert job["tags"] == ["fresh", "strong fit", "high", "onsite"]
 
 
 def test_jobs_backend_gap_frame_flattens_missing_fields() -> None:
@@ -734,7 +738,7 @@ def test_build_search_state_view_model_reports_manual_trigger_when_no_run_exists
 
     assert view_model["tone"] == "info"
     assert view_model["title"] == "Search has not run yet."
-    assert view_model["detail"] == "Run a manual search to load jobs into this view."
+    assert view_model["detail"] == "Refresh jobs to load this view."
 
 
 def test_build_search_state_view_model_reports_failure_state() -> None:
@@ -837,7 +841,7 @@ def test_build_manual_search_feedback_reports_surfaced_jobs() -> None:
 
     assert feedback == {
         "tone": "success",
-        "message": "Manual search finished. Surfaced 2 jobs. Jobs found and surfaced normally.",
+        "message": "Refresh finished. Surfaced 2 jobs.",
     }
 
 
@@ -851,7 +855,7 @@ def test_build_manual_search_feedback_reports_zero_yield_summary() -> None:
 
     assert feedback == {
         "tone": "warning",
-        "message": "Manual search finished. Surfaced 0 jobs. No jobs found from any connector.",
+        "message": "Refresh finished. Surfaced 0 jobs.",
     }
 
 

@@ -23,7 +23,7 @@ def build_search_state_view_model(search_run: dict[str, Any] | None) -> dict[str
         return {
             "tone": "info",
             "title": "Search has not run yet.",
-            "detail": "Run a manual search to load jobs into this view.",
+            "detail": "Refresh jobs to load this view.",
         }
 
     status = str(search_run.get("status") or "").strip().lower()
@@ -70,16 +70,11 @@ def build_search_state_view_model(search_run: dict[str, Any] | None) -> dict[str
 
 def build_manual_search_feedback(sync_result: dict[str, Any]) -> dict[str, str]:
     surfaced_count = int(sync_result.get("surfaced_count") or 0)
-    summary = str(sync_result.get("discovery_summary") or "").strip()
     if surfaced_count > 0:
         tone = "success"
-    elif summary:
-        tone = "warning"
     else:
-        tone = "info"
-    message = f"Manual search finished. Surfaced {surfaced_count} job{'s' if surfaced_count != 1 else ''}."
-    if summary:
-        message = f"{message} {summary}"
+        tone = "warning"
+    message = f"Refresh finished. Surfaced {surfaced_count} job{'s' if surfaced_count != 1 else ''}."
     return {"tone": tone, "message": message}
 
 
@@ -221,6 +216,10 @@ def _work_mode_from_evidence(evidence: dict[str, Any]) -> tuple[str, bool]:
     location_scope = (evidence.get("location_scope") or "").strip().lower()
     if "remote" in location or location_scope.startswith("remote"):
         return "remote", False
+    if "hybrid" in location or location_scope.startswith("hybrid"):
+        return "hybrid", False
+    if location:
+        return "onsite", False
     return "TODO work mode", True
 
 
@@ -256,7 +255,7 @@ def build_job_view_model(lead: dict[str, Any]) -> dict[str, Any]:
             lead.get("freshness_label"),
             lead.get("qualification_fit_label"),
             lead.get("confidence_label"),
-            source_provenance,
+            work_mode,
         ]
         if item
     ][:4]
@@ -369,13 +368,47 @@ def render_job_detail_panel(
     on_apply: Callable[[], None],
     on_dismiss: Callable[[], None],
 ) -> None:
-    st.markdown("### Job detail")
-    st.markdown(f"**{job['title']}**")
-    st.caption(f"{job['company']} • {job['location']} • {job['work_mode']}")
-    st.caption(f"Source: {job['source']} • Provenance: {job['source_provenance']}")
-    stat_cols = st.columns(2)
-    stat_cols[0].metric("Match", job["match_score_display"])
-    stat_cols[1].metric("Label", job["match_label"])
+    st.markdown(
+        """
+        <style>
+        .jorb-job-detail-shell {
+            background: #ffffff;
+            border: 1px solid rgba(15, 23, 42, 0.08);
+            border-radius: 1rem;
+            padding: 1rem;
+        }
+        .jorb-job-detail-title {
+            font-size: 1.35rem;
+            font-weight: 600;
+            color: #111827;
+            margin-bottom: 0.2rem;
+        }
+        .jorb-job-detail-meta {
+            color: #4b5563;
+            font-size: 0.9rem;
+            margin-bottom: 1rem;
+        }
+        .jorb-job-detail-score {
+            background: #f8fafc;
+            border: 1px solid rgba(15, 23, 42, 0.08);
+            border-radius: 0.9rem;
+            padding: 0.85rem 0.95rem;
+            margin-bottom: 1rem;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.markdown('<div class="jorb-job-detail-shell">', unsafe_allow_html=True)
+    st.markdown(f'<div class="jorb-job-detail-title">{escape(job["title"])}</div>', unsafe_allow_html=True)
+    st.markdown(
+        f'<div class="jorb-job-detail-meta">{escape(job["company"])} • {escape(job["location"])} • {escape(job["work_mode"])} • {escape(job["source"])}</div>',
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        f'<div class="jorb-job-detail-score"><strong>{escape(job["match_score_display"])}</strong> • {escape(job["match_label"])}<br>{escape(job["explanation"])}</div>',
+        unsafe_allow_html=True,
+    )
     action_cols = st.columns(4)
     if action_cols[0].button("Close", key=f"close-detail-{page_key}-{job['id']}", use_container_width=True):
         on_close()
@@ -387,8 +420,6 @@ def render_job_detail_panel(
         on_dismiss()
     if job.get("url"):
         st.link_button("Open source", job["url"], use_container_width=True)
-    st.markdown("#### Recommendation")
-    st.write(job["explanation"])
     st.markdown("#### Why this job")
     st.write(job.get("why_this_job") or "TODO: backend did not return a detailed rationale.")
     st.markdown("#### What you are missing")
@@ -397,8 +428,7 @@ def render_job_detail_panel(
     st.write(job.get("suggested_next_steps") or "TODO: backend did not return next steps.")
     st.markdown("#### Full description")
     st.write(job["full_description"])
-    if job.get("backend_gaps"):
-        st.warning("Backend/UI contract gaps for this card: " + ", ".join(job["backend_gaps"]))
+    st.markdown("</div>", unsafe_allow_html=True)
 
 
 def render_jobs_screen(
@@ -413,14 +443,24 @@ def render_jobs_screen(
     send_feedback_fn: Callable[[int, str], None],
 ) -> None:
     jobs = [build_job_view_model(lead) for lead in leads]
-    filters = render_jobs_topbar(page_key=page_key, last_updated=last_updated)
+    filters = render_jobs_topbar(page_key=page_key, last_updated=last_updated, title=title)
     if filters["refresh"]:
-        st.session_state[f"jobs-last-updated-{page_key}"] = datetime.now(timezone.utc)
-        st.rerun()
+        if title == "Jobs" and run_manual_search_fn is not None:
+            feedback_key = f"jobs-manual-search-feedback-{page_key}"
+            try:
+                with st.spinner("Refreshing jobs..."):
+                    result = run_manual_search_fn()
+            except Exception as exc:
+                st.error(f"Refresh failed: {exc}")
+            else:
+                st.session_state[feedback_key] = build_manual_search_feedback(result)
+                st.session_state[f"jobs-last-updated-{page_key}"] = datetime.now(timezone.utc)
+                st.rerun()
+        else:
+            st.session_state[f"jobs-last-updated-{page_key}"] = datetime.now(timezone.utc)
+            st.rerun()
 
     filtered_jobs = _filter_jobs(jobs, filters)
-    gap_frame = jobs_backend_gap_frame(filtered_jobs)
-    st.markdown(f"### {title}")
     if title == "Jobs":
         feedback_key = f"jobs-manual-search-feedback-{page_key}"
         feedback = st.session_state.pop(feedback_key, None)
@@ -430,22 +470,12 @@ def render_jobs_screen(
             if message:
                 getattr(st, tone if tone in {"success", "warning", "info", "error"} else "info")(message)
         render_search_status_region(search_run, visible_job_count=len(filtered_jobs))
-        if run_manual_search_fn is not None and st.button("Run manual search", key=f"jobs-manual-search-{page_key}"):
-            try:
-                with st.spinner("Running manual search..."):
-                    result = run_manual_search_fn()
-            except Exception as exc:
-                st.error(f"Manual search failed: {exc}")
-            else:
-                st.session_state[feedback_key] = build_manual_search_feedback(result)
-                st.session_state[f"jobs-last-updated-{page_key}"] = datetime.now(timezone.utc)
-                st.rerun()
-    if not gap_frame.empty:
-        with st.expander("Backend/UI field gaps", expanded=False):
-            st.dataframe(gap_frame, use_container_width=True, hide_index=True)
 
     selected_job_id = st.session_state.get(f"selected-job-{page_key}")
     selected_job = next((job for job in filtered_jobs if job["id"] == selected_job_id), None)
+    if selected_job is None and filtered_jobs:
+        selected_job = filtered_jobs[0]
+        st.session_state[f"selected-job-{page_key}"] = selected_job["id"]
     list_col, detail_col = st.columns([1.65, 1], gap="large")
 
     with list_col:
@@ -464,6 +494,7 @@ def render_jobs_screen(
             render_job_card(
                 job,
                 page_key=page_key,
+                selected=selected_job is not None and selected_job["id"] == job["id"],
                 on_open=lambda job_id=job["id"]: st.session_state.__setitem__(f"selected-job-{page_key}", job_id),
                 on_save=lambda lead_id=job["lead_id"]: (send_feedback_fn(lead_id, "save"), st.rerun()),
                 on_apply=lambda lead_id=job["lead_id"]: (send_feedback_fn(lead_id, "applied"), st.rerun()),
@@ -472,7 +503,7 @@ def render_jobs_screen(
 
     with detail_col:
         if selected_job is None:
-            st.info("Select a job card and open details to see the right-hand panel.")
+            st.info("No matching jobs found.")
         else:
             render_job_detail_panel(
                 selected_job,
