@@ -9,6 +9,7 @@ import requests
 from services.profile_ingest import build_profile_review_rows
 from ui import app as ui_app
 from ui.components import sidebar as sidebar_component
+from ui.components.topbar import build_jobs_filters_panel_copy, count_active_job_filters
 from ui.app import filter_and_sort_table
 from ui.components.job_card import build_job_card_markup
 from ui.screens.jobs import (
@@ -209,6 +210,24 @@ def test_filter_and_sort_table_sorts_by_highest_recommendation_first() -> None:
     )
 
     assert filtered["company"].tolist() == ["HigherRanked", "LowerRanked"]
+
+
+def test_count_active_job_filters_counts_only_visible_jobs_filters() -> None:
+    assert count_active_job_filters(search="ops", location="Remote", remote_only=True) == 3
+    assert count_active_job_filters(search=" ", location="", remote_only=False) == 0
+
+
+def test_build_jobs_filters_panel_copy_reports_active_filter_count() -> None:
+    empty_copy = build_jobs_filters_panel_copy(active_filter_count=0)
+    active_copy = build_jobs_filters_panel_copy(active_filter_count=2)
+
+    assert empty_copy == {
+        "eyebrow": "Filters",
+        "description": "Narrow the jobs list without leaving the current results.",
+        "count_label": "No active filters",
+    }
+    assert active_copy["eyebrow"] == "Filters"
+    assert active_copy["count_label"] == "2 active filters"
 
 
 def test_recent_search_runs_frame_exposes_query_and_failure_observability() -> None:
