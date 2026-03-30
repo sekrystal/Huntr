@@ -126,9 +126,9 @@ def render_sidebar(
     _render_sidebar_chrome(title="Jorb", caption="Jobs-first workbench")
     primary_page = st.sidebar.radio("Navigate", PRIMARY_PAGES, index=0, label_visibility="collapsed")
     _render_system_status(stats=stats, runtime=runtime, health=health)
-    with st.sidebar.expander("Admin / debug", expanded=False):
-        st.caption("Open the internal validation and operator harness without changing the jobs-first shell.")
-        open_operator_console = st.button("Open internal harness", use_container_width=True)
+    with st.sidebar.expander("Workspace tools", expanded=False):
+        st.caption("Open workspace tools without leaving the jobs-first shell.")
+        open_operator_console = st.button("Open workspace tools", use_container_width=True)
     return primary_page, open_operator_console
 
 

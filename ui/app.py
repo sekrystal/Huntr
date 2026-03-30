@@ -314,7 +314,7 @@ def render_onboarding_progress(state: dict[str, Any]) -> None:
         "resume": "Upload resume",
         "review": "Review profile",
         "target_role": "Pick target role",
-        "discovery": "Enter discovery",
+        "discovery": "View jobs",
     }
     order = ["resume", "review", "target_role", "discovery"]
     current_step = state["current_step"]
@@ -1176,7 +1176,7 @@ def render_profile_tab(profile: dict[str, Any], learning: dict[str, Any]) -> Non
             st.caption(
                 "This selection becomes the first preferred and core title used for profile-aware search and fit scoring."
             )
-            if st.form_submit_button("Save profile and enter discovery", use_container_width=True):
+            if st.form_submit_button("Save profile and view jobs", use_container_width=True):
                 selected_target_role = custom_target_role.strip() or target_role
                 payload = apply_target_role_selection(draft_profile, selected_target_role)
                 fetch_json("/candidate-profile", method="POST", payload=payload)
@@ -1187,12 +1187,12 @@ def render_profile_tab(profile: dict[str, Any], learning: dict[str, Any]) -> Non
                 st.rerun()
 
     if onboarding_state["current_step"] == "discovery":
-        st.markdown("#### Step 4: Enter discovery")
+        st.markdown("#### Step 4: View jobs")
         selected_target_role = (profile.get("extracted_summary_json") or {}).get("selected_target_role") or st.session_state.get("last_onboarding_target_role")
         if selected_target_role:
             st.success(f"Target role saved: {selected_target_role}")
         st.caption(
-            "Continue in the Leads tab for ranked matches or the Discovery tab to inspect recall expansion from this saved profile."
+            "Continue in Jobs for ranked matches. Open Workspace tools if you want to inspect search coverage from this saved profile."
         )
 
     st.markdown("#### Local network import")
@@ -1234,7 +1234,7 @@ def render_profile_tab(profile: dict[str, Any], learning: dict[str, Any]) -> Non
 
     st.markdown("#### Privacy and local data inventory")
     st.caption(
-        "Inspect what JORB stores locally for your profile, where it came from, and whether a category stays local or can flow into cloud-assisted discovery paths."
+        "Inspect what JORB stores locally for your profile, where it came from, and whether a category stays local or can support cloud-assisted matching."
     )
     inventory_frame = profile_inventory_frame(profile)
     inventory_export = profile_inventory_export(profile)
@@ -1642,7 +1642,7 @@ def main() -> None:
             set_operator_console(False)
             st.rerun()
     else:
-        st.caption("Jobs-first opportunity intelligence, using the real backend system.")
+        st.caption("Ranked jobs matched to your profile.")
         primary_page, open_operator_console = render_sidebar(stats=stats, runtime=runtime, health=health)
         if open_operator_console:
             set_operator_console(True)
@@ -1675,7 +1675,7 @@ def main() -> None:
             search_run=latest_search_run,
             page_key="jobs",
             title="Jobs",
-            empty_message="No matching jobs found. Try adjusting filters or wait for the next discovery cycle.",
+            empty_message="No matching jobs found. Try adjusting filters or check back after the next refresh.",
             last_updated=datetime.now(),
             run_manual_search_fn=run_manual_search,
             send_feedback_fn=send_feedback,

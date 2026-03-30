@@ -525,13 +525,31 @@ def test_streamlit_jobs_shell_demotes_job_link_and_moves_operator_access_out_of_
     assert "show_operator_console" in app_source
     assert "render_operator_sidebar" in app_source
     assert 'with st.sidebar.expander("Advanced filters", expanded=False):' not in app_source
-    assert 'with st.sidebar.expander("Admin / debug", expanded=False):' in sidebar_source
-    assert "internal validation and operator harness" in sidebar_source
-    assert "Open internal harness" in sidebar_source
+    assert 'with st.sidebar.expander("Workspace tools", expanded=False):' in sidebar_source
+    assert "Open workspace tools without leaving the jobs-first shell." in sidebar_source
+    assert 'st.button("Open workspace tools", use_container_width=True)' in sidebar_source
     assert "Back to jobs shell" in sidebar_source
     assert 'with st.sidebar.expander("Operator surfaces"' not in sidebar_source
     assert 'with st.expander("Backend/UI field gaps", expanded=False):' not in jobs_source
     assert 'st.button("Run manual search"' not in jobs_source
+
+
+def test_streamlit_primary_shell_copy_avoids_internal_system_language() -> None:
+    app_source = Path("ui/app.py").read_text()
+    sidebar_source = Path("ui/components/sidebar.py").read_text()
+
+    assert 'Save profile and view jobs' in app_source
+    assert '#### Step 4: View jobs' in app_source
+    assert 'Continue in Jobs for ranked matches. Open Workspace tools if you want to inspect search coverage from this saved profile.' in app_source
+    assert 'Inspect what JORB stores locally for your profile, where it came from, and whether a category stays local or can support cloud-assisted matching.' in app_source
+    assert 'Ranked jobs matched to your profile.' in app_source
+    assert 'No matching jobs found. Try adjusting filters or check back after the next refresh.' in app_source
+    assert "Open workspace tools" in sidebar_source
+    assert "Save profile and enter discovery" not in app_source
+    assert "Step 4: Enter discovery" not in app_source
+    assert "the next discovery cycle" not in app_source
+    assert "Admin / debug" not in sidebar_source
+    assert "Open internal harness" not in sidebar_source
 
 
 def test_rejection_feedback_summary_surfaces_structured_buckets() -> None:
