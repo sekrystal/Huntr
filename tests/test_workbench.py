@@ -210,6 +210,37 @@ def test_filter_and_sort_table_sorts_by_highest_recommendation_first() -> None:
     assert filtered["company"].tolist() == ["HigherRanked", "LowerRanked"]
 
 
+def test_recent_search_runs_frame_exposes_query_and_failure_observability() -> None:
+    frame = ui_app.recent_search_runs_frame(
+        [
+            {
+                "created_at": "2026-03-29T12:30:00Z",
+                "source_key": "search_web_ats",
+                "worker_name": "ats_resolver",
+                "provider": "duckduckgo_html",
+                "status": "empty",
+                "live": True,
+                "zero_yield": True,
+                "queries": ['site:job-boards.greenhouse.io "chief of staff"', '"chief of staff" careers'],
+                "query_count": 2,
+                "result_count": 0,
+                "failure_classification": "search_provider_failure",
+                "error": "provider self-links only",
+            }
+        ]
+    )
+
+    row = frame.iloc[0].to_dict()
+    assert row["source"] == "search_web_ats"
+    assert row["worker"] == "ats_resolver"
+    assert row["live"] == "yes"
+    assert row["zero_yield"] == "yes"
+    assert row["query_count"] == 2
+    assert row["result_count"] == 0
+    assert row["failure_classification"] == "search_provider_failure"
+    assert row["queries"] == 'site:job-boards.greenhouse.io "chief of staff" | "chief of staff" careers'
+
+
 def test_lead_frame_includes_recommendation_action_label() -> None:
     frame = ui_app.lead_frame(
         [

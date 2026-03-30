@@ -373,6 +373,28 @@ def discovery_source_matrix_frame(source_matrix: list[dict[str, Any]]) -> pd.Dat
     return pd.DataFrame(rows)
 
 
+def recent_search_runs_frame(search_runs: list[dict[str, Any]]) -> pd.DataFrame:
+    rows: list[dict[str, Any]] = []
+    for run in search_runs:
+        rows.append(
+            {
+                "observed_at": format_timestamp(run.get("created_at")),
+                "source": run.get("source_key") or "",
+                "worker": run.get("worker_name") or "",
+                "provider": run.get("provider") or "",
+                "status": run.get("status") or "",
+                "live": "yes" if run.get("live") else "no",
+                "zero_yield": "yes" if run.get("zero_yield") else "no",
+                "queries": " | ".join(str(query).strip() for query in (run.get("queries") or []) if str(query).strip()),
+                "query_count": int(run.get("query_count") or 0),
+                "result_count": int(run.get("result_count") or 0),
+                "failure_classification": run.get("failure_classification") or "",
+                "error": run.get("error") or "",
+            }
+        )
+    return pd.DataFrame(rows)
+
+
 def agentic_leads_frame(agentic_leads: list[dict[str, Any]]) -> pd.DataFrame:
     rows: list[dict[str, Any]] = []
     for lead in agentic_leads:
@@ -1469,6 +1491,9 @@ def render_discovery_tab() -> None:
     if payload.get("recent_geography_rejections"):
         st.markdown("#### Geography Rejections")
         st.dataframe(pd.DataFrame(payload["recent_geography_rejections"]), use_container_width=True, hide_index=True)
+    if payload.get("recent_search_runs"):
+        st.markdown("#### Recent Search Runs")
+        st.dataframe(recent_search_runs_frame(payload["recent_search_runs"]), use_container_width=True, hide_index=True)
     st.markdown("#### End-to-End Discovery Slice")
     slice_status = payload.get("agentic_slice_status") or {}
     if slice_status.get("summary"):
