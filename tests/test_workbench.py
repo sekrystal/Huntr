@@ -653,7 +653,23 @@ def test_fetch_json_returns_empty_leads_payload_on_request_failure(monkeypatch) 
 
     payload = ui_app.fetch_json("/leads?freshness_window_days=14")
 
-    assert payload == {"items": [], "search_meta": None}
+    assert payload == {
+        "items": [],
+        "search_meta": {
+            "query": "",
+            "status": "error",
+            "error": "timeout",
+            "backend_applied": False,
+            "partial_results": False,
+            "result_count": 0,
+            "request_path": "/leads?freshness_window_days=14",
+        },
+        "request_error": {
+            "path": "/leads?freshness_window_days=14",
+            "message": "timeout",
+            "surface": "leads",
+        },
+    }
     assert captured
     assert captured_timeout == [10]
 
@@ -1625,6 +1641,48 @@ def test_build_jobs_empty_state_view_model_reports_running_search() -> None:
 
     assert view_model["title"] == "Search is running."
     assert "current run finishes" in view_model["detail"]
+
+
+def test_build_search_state_view_model_reports_leads_load_failure_without_falling_back_to_idle() -> None:
+    view_model = build_search_state_view_model(
+        None,
+        search_meta={
+            "query": "",
+            "status": "error",
+            "error": "503 Server Error",
+            "request_path": "/leads?freshness_window_days=14",
+        },
+        load_errors={
+            "leads": {
+                "path": "/leads?freshness_window_days=14",
+                "message": "503 Server Error",
+            }
+        },
+    )
+
+    assert view_model["tone"] == "error"
+    assert view_model["title"] == "Jobs failed to load."
+    assert "/leads?freshness_window_days=14" in view_model["detail"]
+    assert "503 Server Error" in view_model["detail"]
+
+
+def test_build_jobs_empty_state_view_model_reports_discovery_status_fetch_failure() -> None:
+    view_model = build_jobs_empty_state_view_model(
+        None,
+        total_job_count=0,
+        filters={"search": "", "location": "", "remote_only": False},
+        load_errors={
+            "discovery_status": {
+                "path": "/discovery-status",
+                "message": "Read timed out",
+            }
+        },
+    )
+
+    assert view_model["tone"] == "error"
+    assert view_model["title"] == "Discovery status could not be loaded."
+    assert "/discovery-status" in view_model["detail"]
+    assert "Read timed out" in view_model["detail"]
 
 
 def test_build_jobs_empty_state_view_model_uses_search_run_truth_for_zero_results() -> None:

@@ -116,17 +116,20 @@ def fetch_json(path: str, method: str = "GET", payload: Optional[dict] = None) -
         if path.startswith("/leads"):
             st.error(f"Leads request failed while loading `{path}`: {exc}. The rest of the page is still available.")
             query = parse_qs(urlparse(path).query).get("q", [""])[0].strip()
-            search_meta = None
-            if query:
-                search_meta = {
-                    "query": query,
-                    "status": "error",
-                    "error": str(exc),
-                    "backend_applied": False,
-                    "partial_results": False,
-                    "result_count": 0,
-                }
-            return {"items": [], "search_meta": search_meta}
+            search_meta = {
+                "query": query,
+                "status": "error",
+                "error": str(exc),
+                "backend_applied": False,
+                "partial_results": False,
+                "result_count": 0,
+                "request_path": path,
+            }
+            return {
+                "items": [],
+                "search_meta": search_meta,
+                "request_error": {"path": path, "message": str(exc), "surface": "leads"},
+            }
         raise
 
 
@@ -135,6 +138,13 @@ def fetch_optional_json(path: str) -> Optional[dict[str, Any]]:
         return fetch_json(path)
     except requests.exceptions.RequestException:
         return None
+
+
+def fetch_optional_json_with_error(path: str) -> tuple[Optional[dict[str, Any]], Optional[dict[str, str]]]:
+    try:
+        return fetch_json(path), None
+    except requests.exceptions.RequestException as exc:
+        return None, {"path": path, "message": str(exc)}
 
 
 def operator_console_enabled() -> bool:
@@ -1748,13 +1758,18 @@ def main() -> None:
             include_signal_only=False,
         )
         leads = jobs_payload["items"]
-        latest_search_run = fetch_optional_json("/search-runs/latest")
-        discovery_status = fetch_optional_json("/discovery-status")
+        latest_search_run, latest_search_run_error = fetch_optional_json_with_error("/search-runs/latest")
+        discovery_status, discovery_status_error = fetch_optional_json_with_error("/discovery-status")
         render_jobs_screen(
             leads=leads,
             search_run=latest_search_run,
             discovery_status=discovery_status,
             search_meta=jobs_payload.get("search_meta"),
+            load_errors={
+                "leads": jobs_payload.get("request_error"),
+                "search_run": latest_search_run_error,
+                "discovery_status": discovery_status_error,
+            },
             page_key="jobs",
             title="Jobs",
             empty_message="No matching jobs found. Try adjusting filters or check back after the next refresh.",

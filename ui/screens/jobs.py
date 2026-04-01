@@ -160,8 +160,22 @@ def build_search_state_view_model(
     search_meta: dict[str, Any] | None = None,
     discovery_status: dict[str, Any] | None = None,
     visible_job_count: int | None = None,
+    load_errors: dict[str, dict[str, str] | None] | None = None,
 ) -> dict[str, str]:
-    if search_meta and str(search_meta.get("query") or "").strip():
+    leads_error = dict((load_errors or {}).get("leads") or {})
+    if leads_error:
+        return {
+            "tone": "error",
+            "eyebrow": "Jobs",
+            "badge": "Load failed",
+            "title": "Jobs failed to load.",
+            "detail": (
+                f"Could not load `{leads_error.get('path') or '/leads'}`. "
+                f"The Jobs API request failed before any results could be shown: {leads_error.get('message') or 'unknown error'}."
+            ),
+        }
+
+    if search_meta and (str(search_meta.get("query") or "").strip() or search_meta.get("error")):
         query = str(search_meta.get("query") or "").strip()
         status = str(search_meta.get("status") or "").strip().lower()
         result_count = int(search_meta.get("result_count") or 0)
@@ -173,8 +187,11 @@ def build_search_state_view_model(
                 "tone": "error",
                 "eyebrow": "Search",
                 "badge": "Error",
-                "title": "Search failed.",
-                "detail": f"Could not load results for '{query}'. Backend search failed before results were returned.",
+                "title": "Search failed." if query else "Jobs failed to load.",
+                "detail": (
+                    f"Could not load results for '{query}'." if query else "Could not load Jobs."
+                )
+                + " Backend search failed before results were returned.",
             }
 
         if status in {"queued", "running", "loading"}:
@@ -253,6 +270,32 @@ def build_search_state_view_model(
                 "detail": summary or "Run discovery again to fetch more jobs.",
             }
 
+    discovery_error = dict((load_errors or {}).get("discovery_status") or {})
+    if discovery_error and (visible_job_count or 0) == 0:
+        return {
+            "tone": "error",
+            "eyebrow": "Discovery",
+            "badge": "Unavailable",
+            "title": "Discovery status could not be loaded.",
+            "detail": (
+                f"Jorb could not verify whether live discovery found jobs because `{discovery_error.get('path') or '/discovery-status'}` failed: "
+                f"{discovery_error.get('message') or 'unknown error'}."
+            ),
+        }
+
+    search_run_error = dict((load_errors or {}).get("search_run") or {})
+    if search_run_error and (visible_job_count or 0) == 0:
+        return {
+            "tone": "warning",
+            "eyebrow": "Search",
+            "badge": "Unavailable",
+            "title": "Latest refresh status is unavailable.",
+            "detail": (
+                f"Jorb could not load `{search_run_error.get('path') or '/search-runs/latest'}`: "
+                f"{search_run_error.get('message') or 'unknown error'}."
+            ),
+        }
+
     if not search_run:
         return {
             "tone": "info",
@@ -328,12 +371,14 @@ def render_search_status_region(
     visible_job_count: int,
     search_meta: dict[str, Any] | None = None,
     discovery_status: dict[str, Any] | None = None,
+    load_errors: dict[str, dict[str, str] | None] | None = None,
 ) -> None:
     search_state = build_search_state_view_model(
         search_run,
         search_meta=search_meta,
         discovery_status=discovery_status,
         visible_job_count=visible_job_count,
+        load_errors=load_errors,
     )
     palette = {
         "info": {"background": "#F8FAFC", "border": "#CBD5E1", "accent": "#334155"},
@@ -399,6 +444,7 @@ def build_jobs_empty_state_view_model(
     filters: dict[str, Any],
     search_meta: dict[str, Any] | None = None,
     discovery_status: dict[str, Any] | None = None,
+    load_errors: dict[str, dict[str, str] | None] | None = None,
 ) -> dict[str, Any]:
     has_filters = bool(filters["search"].strip() or filters["location"].strip() or filters["remote_only"])
     backend_search_active = bool(search_meta and str(search_meta.get("query") or "").strip())
@@ -429,6 +475,7 @@ def build_jobs_empty_state_view_model(
         search_meta=search_meta,
         discovery_status=discovery_status,
         visible_job_count=0,
+        load_errors=load_errors,
     )
     result_count = int((search_run or {}).get("result_count") or 0)
     if backend_search_active:
@@ -459,6 +506,7 @@ def render_jobs_empty_state(
     page_key: str,
     search_meta: dict[str, Any] | None = None,
     discovery_status: dict[str, Any] | None = None,
+    load_errors: dict[str, dict[str, str] | None] | None = None,
 ) -> None:
     empty_state = build_jobs_empty_state_view_model(
         search_run,
@@ -466,6 +514,7 @@ def render_jobs_empty_state(
         filters=filters,
         search_meta=search_meta,
         discovery_status=discovery_status,
+        load_errors=load_errors,
     )
     st.markdown(build_jobs_empty_state_markup(empty_state), unsafe_allow_html=True)
     if not empty_state["show_clear_filters"]:
@@ -982,6 +1031,7 @@ def render_jobs_screen(
     search_run: dict[str, Any] | None = None,
     discovery_status: dict[str, Any] | None = None,
     search_meta: dict[str, Any] | None = None,
+    load_errors: dict[str, dict[str, str] | None] | None = None,
     page_key: str,
     title: str,
     empty_message: str,
@@ -1034,6 +1084,7 @@ def render_jobs_screen(
             visible_job_count=len(filtered_jobs),
             search_meta=search_meta,
             discovery_status=discovery_status,
+            load_errors=load_errors,
         )
     elif intro_message:
         st.markdown(build_jobs_intro_state_markup(title=title, intro_message=intro_message), unsafe_allow_html=True)
@@ -1071,6 +1122,7 @@ def render_jobs_screen(
                     page_key=page_key,
                     search_meta=search_meta,
                     discovery_status=discovery_status,
+                    load_errors=load_errors,
                 )
             else:
                 st.markdown(
