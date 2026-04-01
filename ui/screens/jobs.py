@@ -261,6 +261,14 @@ def build_search_state_view_model(
                 "title": "Discovery ran but found no verified jobs.",
                 "detail": summary or "The latest discovery cycle finished without any verified jobs to show.",
             }
+        if status == "live_discovery_unavailable":
+            return {
+                "tone": "error",
+                "eyebrow": "Discovery",
+                "badge": "Unavailable",
+                "title": "Live job discovery is unavailable.",
+                "detail": summary or "Live discovery is not runnable in this environment.",
+            }
         if status == "no_verified_jobs":
             return {
                 "tone": "info",

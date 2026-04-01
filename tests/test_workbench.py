@@ -1324,6 +1324,28 @@ def test_build_search_state_view_model_reports_blocked_automatic_discovery() -> 
     assert "Automatic discovery is currently blocked" in view_model["detail"]
 
 
+def test_build_search_state_view_model_reports_live_discovery_unavailable_when_only_demo_sources_exist() -> None:
+    view_model = build_search_state_view_model(
+        None,
+        discovery_status={
+            "agentic_slice_status": {
+                "status": "live_discovery_unavailable",
+                "summary": "Live job discovery is not runnable in this environment. Blocked live sources: Search Web, Search Scrape Fallback, YC Jobs. Demo-only sources: Greenhouse, Ashby.",
+            },
+            "source_matrix": [
+                {"source_key": "greenhouse", "label": "Greenhouse", "classification": "working", "runtime_state": "demo_enabled"},
+                {"source_key": "ashby", "label": "Ashby", "classification": "working", "runtime_state": "demo_enabled"},
+                {"source_key": "search_web", "label": "Search Web", "classification": "not_working", "runtime_state": "disabled"},
+            ],
+        },
+    )
+
+    assert view_model["tone"] == "error"
+    assert view_model["badge"] == "Unavailable"
+    assert view_model["title"] == "Live job discovery is unavailable."
+    assert "Demo-only sources: Greenhouse, Ashby." in view_model["detail"]
+
+
 def test_build_jobs_empty_state_view_model_uses_discovery_zero_yield_status() -> None:
     view_model = build_jobs_empty_state_view_model(
         None,

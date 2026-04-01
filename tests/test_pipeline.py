@@ -1086,3 +1086,27 @@ def test_build_discovery_status_reports_zero_yield_when_no_verified_agentic_jobs
     assert status.agentic_slice_status["status"] == "zero_yield"
     assert status.agentic_slice_status["zero_yield"] is True
     assert "provider self-links only" in status.agentic_slice_status["summary"]
+
+
+def test_build_discovery_status_reports_live_discovery_unavailable_when_only_demo_or_disabled_sources_exist(monkeypatch) -> None:
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(engine)
+    session = sessionmaker(bind=engine, expire_on_commit=False)()
+    monkeypatch.setattr(
+        "services.company_discovery.get_settings",
+        lambda: Settings(
+            demo_mode=True,
+            greenhouse_enabled=False,
+            ashby_orgs=[],
+            search_discovery_enabled=False,
+        ),
+    )
+
+    status = build_discovery_status(session)
+
+    assert status.recent_agentic_leads == []
+    assert status.agentic_slice_status["status"] == "live_discovery_unavailable"
+    assert status.agentic_slice_status["live_runnable"] is False
+    assert "Live job discovery is not runnable in this environment." in status.agentic_slice_status["summary"]
+    assert "Search Web" in status.agentic_slice_status["summary"]
+    assert "Greenhouse" in status.agentic_slice_status["summary"]

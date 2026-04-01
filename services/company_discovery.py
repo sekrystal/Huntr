@@ -563,7 +563,46 @@ def _agentic_lead_payload(lead: Lead, listing: Listing | None) -> dict[str, obje
     }
 
 
-def _agentic_slice_status(agentic_leads: list[dict[str, object]], cycle_metrics: dict[str, object]) -> dict[str, object]:
+def _live_job_discovery_state(source_matrix: list[dict[str, object]] | list[DiscoverySourceMatrixRow]) -> dict[str, object]:
+    live_job_source_keys = {"greenhouse", "ashby", "search_web", "search_web_scrape_fallback", "yc_jobs"}
+
+    def _row_value(row: dict[str, object] | DiscoverySourceMatrixRow, field: str, default: object = "") -> object:
+        if isinstance(row, dict):
+            return row.get(field, default)
+        return getattr(row, field, default)
+
+    rows = [
+        row
+        for row in source_matrix
+        if str(_row_value(row, "source_key", "") or "") in live_job_source_keys
+    ]
+    live_runnable_sources: list[str] = []
+    demo_only_sources: list[str] = []
+    blocked_sources: list[str] = []
+
+    for row in rows:
+        runtime_state = str(_row_value(row, "runtime_state", "") or "").strip().lower()
+        classification = str(_row_value(row, "classification", "") or "").strip().lower()
+        label = str(_row_value(row, "label", "Unknown source") or "Unknown source")
+        if runtime_state == "live_enabled" and classification in {"working", "partially_working"}:
+            live_runnable_sources.append(label)
+        elif runtime_state == "demo_enabled":
+            demo_only_sources.append(label)
+        elif classification == "not_working":
+            blocked_sources.append(label)
+
+    return {
+        "live_runnable_sources": live_runnable_sources,
+        "demo_only_sources": demo_only_sources,
+        "blocked_sources": blocked_sources,
+    }
+
+
+def _agentic_slice_status(
+    agentic_leads: list[dict[str, object]],
+    cycle_metrics: dict[str, object],
+    source_matrix: list[dict[str, object]] | list[DiscoverySourceMatrixRow],
+) -> dict[str, object]:
     if agentic_leads:
         return {
             "status": "verified_jobs_available",
@@ -585,11 +624,29 @@ def _agentic_slice_status(agentic_leads: list[dict[str, object]], cycle_metrics:
             "zero_yield_attempt_count": attempts,
         }
 
+    live_state = _live_job_discovery_state(source_matrix)
+    if not live_state["live_runnable_sources"] and (live_state["blocked_sources"] or live_state["demo_only_sources"]):
+        summary_parts = ["Live job discovery is not runnable in this environment."]
+        if live_state["blocked_sources"]:
+            summary_parts.append(f"Blocked live sources: {', '.join(live_state['blocked_sources'])}.")
+        if live_state["demo_only_sources"]:
+            summary_parts.append(f"Demo-only sources: {', '.join(live_state['demo_only_sources'])}.")
+        return {
+            "status": "live_discovery_unavailable",
+            "summary": " ".join(summary_parts),
+            "verified_jobs": 0,
+            "zero_yield": False,
+            "live_runnable": False,
+            "blocked_live_sources": live_state["blocked_sources"],
+            "demo_only_sources": live_state["demo_only_sources"],
+        }
+
     return {
         "status": "no_verified_jobs",
         "summary": "No verified search-discovered jobs are currently available in the UI.",
         "verified_jobs": 0,
         "zero_yield": False,
+        "live_runnable": bool(live_state["live_runnable_sources"]),
     }
 
 
@@ -1275,7 +1332,7 @@ def build_discovery_status(session: Session) -> DiscoveryStatusResponse:
             if (lead.evidence_json or {}).get("suppression_category") == "location"
         ][:12],
         recent_agentic_leads=agentic_leads,
-        agentic_slice_status=_agentic_slice_status(agentic_leads, cycle_metrics),
+        agentic_slice_status=_agentic_slice_status(agentic_leads, cycle_metrics, source_matrix),
         next_recommended_queries=[
             note
             for run in recent_runs
