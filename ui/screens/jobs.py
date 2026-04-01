@@ -12,6 +12,15 @@ from ui.components.job_card import render_job_card
 from ui.components.topbar import render_jobs_topbar
 
 
+LIVE_JOB_DISCOVERY_SOURCE_KEYS = {
+    "greenhouse",
+    "ashby",
+    "search_web",
+    "search_web_scrape_fallback",
+    "yc_jobs",
+}
+
+
 def is_restorable_dismissed_lead(lead: dict[str, Any]) -> bool:
     evidence = lead.get("evidence_json") or {}
     return bool(evidence.get("user_dismissed_at")) or str(evidence.get("suppression_category") or "").strip().lower() == "user_dismissed"
@@ -131,8 +140,71 @@ def _format_search_fields(search_meta: dict[str, Any]) -> str:
 
 def _automatic_source_rows(discovery_status: dict[str, Any] | None) -> list[dict[str, Any]]:
     source_matrix = list((discovery_status or {}).get("source_matrix") or [])
-    automatic_source_keys = {"greenhouse", "ashby", "search_web", "search_web_scrape_fallback", "x_search"}
-    return [row for row in source_matrix if str(row.get("source_key") or "") in automatic_source_keys]
+    return [row for row in source_matrix if str(row.get("source_key") or "") in LIVE_JOB_DISCOVERY_SOURCE_KEYS]
+
+
+def _merge_discovery_detail(summary: str, failure_detail: str | None) -> str:
+    summary_text = str(summary or "").strip()
+    failure_text = str(failure_detail or "").strip()
+    if not failure_text:
+        return summary_text
+    if not summary_text:
+        return failure_text
+    if failure_text in summary_text:
+        return summary_text
+    return f"{summary_text} {failure_text}".strip()
+
+
+def _manual_search_feedback_from_discovery_status(discovery_status: dict[str, Any] | None) -> dict[str, str] | None:
+    status_payload = dict(discovery_status or {})
+    cycle_metrics = dict(status_payload.get("cycle_metrics") or {})
+    source_matrix = list(status_payload.get("source_matrix") or [])
+
+    search_zero_yield = dict(cycle_metrics.get("search_zero_yield") or {})
+    if search_zero_yield:
+        reason = str(search_zero_yield.get("reason") or "search provider returned no accepted results").strip()
+        attempts = int(search_zero_yield.get("zero_yield_attempt_count", 0) or 0)
+        return {
+            "tone": "warning",
+            "message": (
+                "Refresh finished with zero verified jobs. "
+                f"Search discovery returned no accepted results after {attempts} attempt(s): {reason}."
+            ),
+        }
+
+    search_failure = dict(cycle_metrics.get("search_fetch_diagnostics") or {})
+    failure_status = str(search_failure.get("status") or "").strip().lower()
+    if failure_status in {"failed", "error"}:
+        failure_classification = str(search_failure.get("failure_classification") or "search_runtime_error").strip()
+        error = str(search_failure.get("error") or "").strip()
+        detail = f" Failure: {failure_classification}."
+        if error:
+            detail += f" Error: {error}."
+        return {
+            "tone": "error",
+            "message": f"Refresh failed before verified jobs could be returned.{detail}",
+        }
+
+    blocked_live_sources = [
+        str(row.get("label") or row.get("source_key") or "Unknown source")
+        for row in source_matrix
+        if str(row.get("source_key") or "") in LIVE_JOB_DISCOVERY_SOURCE_KEYS
+        and str(row.get("classification") or "").strip().lower() == "not_working"
+    ]
+    live_runnable_sources = [
+        str(row.get("label") or row.get("source_key") or "Unknown source")
+        for row in source_matrix
+        if str(row.get("source_key") or "") in LIVE_JOB_DISCOVERY_SOURCE_KEYS
+        and str(row.get("runtime_state") or "").strip().lower() == "live_enabled"
+        and str(row.get("classification") or "").strip().lower() in {"working", "partially_working"}
+    ]
+    if blocked_live_sources and not live_runnable_sources:
+        return {
+            "tone": "error",
+            "message": "Refresh could not run live job discovery. Blocked live sources: " + ", ".join(blocked_live_sources) + ".",
+        }
+
+    return None
 
 
 def _discovery_failure_detail(discovery_status: dict[str, Any] | None) -> str | None:
@@ -240,19 +312,6 @@ def build_search_state_view_model(
                 "title": "Live discovery is returning verified jobs.",
                 "detail": detail,
             }
-        if failure_detail:
-            detail = summary
-            if summary and failure_detail not in summary:
-                detail = f"{summary} {failure_detail}".strip()
-            elif not detail:
-                detail = failure_detail
-            return {
-                "tone": "error",
-                "eyebrow": "Discovery",
-                "badge": "Blocked",
-                "title": "Automatic discovery is not runnable.",
-                "detail": detail or "Automatic discovery is blocked.",
-            }
         if status == "zero_yield":
             return {
                 "tone": "warning",
@@ -267,7 +326,7 @@ def build_search_state_view_model(
                 "eyebrow": "Discovery",
                 "badge": "Unavailable",
                 "title": "Live job discovery is unavailable.",
-                "detail": summary or "Live discovery is not runnable in this environment.",
+                "detail": _merge_discovery_detail(summary, failure_detail) or "Live discovery is not runnable in this environment.",
             }
         if status == "live_discovery_failed":
             return {
@@ -275,7 +334,16 @@ def build_search_state_view_model(
                 "eyebrow": "Discovery",
                 "badge": "Failed",
                 "title": "Live job discovery failed.",
-                "detail": summary or "The latest live discovery cycle failed before verified jobs could be shown.",
+                "detail": _merge_discovery_detail(summary, failure_detail)
+                or "The latest live discovery cycle failed before verified jobs could be shown.",
+            }
+        if failure_detail:
+            return {
+                "tone": "error",
+                "eyebrow": "Discovery",
+                "badge": "Blocked",
+                "title": "Automatic discovery is not runnable.",
+                "detail": _merge_discovery_detail(summary, failure_detail) or "Automatic discovery is blocked.",
             }
         if status == "no_verified_jobs":
             return {
@@ -393,6 +461,9 @@ def build_search_state_view_model(
 def build_manual_search_feedback(sync_result: dict[str, Any]) -> dict[str, str]:
     surfaced_count = int(sync_result.get("surfaced_count") or 0)
     discovery_summary = str(sync_result.get("discovery_summary") or "").strip()
+    discovery_feedback = _manual_search_feedback_from_discovery_status(sync_result.get("discovery_status"))
+    if discovery_feedback is not None:
+        return discovery_feedback
     tone = "success" if surfaced_count > 0 else "warning"
     message = f"Refresh finished. Surfaced {surfaced_count} job{'s' if surfaced_count != 1 else ''}."
     if discovery_summary:

@@ -80,6 +80,15 @@ from services.search_runs import record_search_run
 logger = get_logger(__name__)
 
 
+LIVE_JOB_DISCOVERY_SOURCE_KEYS = {
+    "greenhouse",
+    "ashby",
+    "search_web",
+    "search_web_scrape_fallback",
+    "yc_jobs",
+}
+
+
 def _dedupe_preserve_order(values: list[str]) -> list[str]:
     ordered: list[str] = []
     seen: set[str] = set()
@@ -2645,7 +2654,7 @@ def sync_all(
     unavailable_automatic_sources = [
         row["label"]
         for row in source_matrix
-        if row["source_key"] in {"greenhouse", "ashby", "search_web", "search_web_scrape_fallback", "x_search"}
+        if row["source_key"] in LIVE_JOB_DISCOVERY_SOURCE_KEYS
         and row["classification"] == "not_working"
     ]
     discovery_summary = _build_discovery_summary(

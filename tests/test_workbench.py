@@ -1301,6 +1301,49 @@ def test_build_manual_search_feedback_reports_zero_yield_summary() -> None:
     }
 
 
+def test_build_manual_search_feedback_reports_live_discovery_failure() -> None:
+    feedback = build_manual_search_feedback(
+        {
+            "surfaced_count": 0,
+            "discovery_summary": "No jobs found from any connector.",
+            "discovery_status": {
+                "cycle_metrics": {
+                    "search_fetch_diagnostics": {
+                        "status": "failed",
+                        "failure_classification": "search_timeout",
+                        "error": "search request timed out",
+                    }
+                }
+            },
+        }
+    )
+
+    assert feedback == {
+        "tone": "error",
+        "message": "Refresh failed before verified jobs could be returned. Failure: search_timeout. Error: search request timed out.",
+    }
+
+
+def test_build_manual_search_feedback_does_not_treat_x_search_as_live_job_blocker() -> None:
+    feedback = build_manual_search_feedback(
+        {
+            "surfaced_count": 0,
+            "discovery_summary": "No jobs found from any connector.",
+            "discovery_status": {
+                "source_matrix": [
+                    {"source_key": "x_search", "label": "X Search", "classification": "not_working"},
+                    {"source_key": "search_web", "label": "Search Web", "classification": "working", "runtime_state": "live_enabled"},
+                ]
+            },
+        }
+    )
+
+    assert feedback == {
+        "tone": "warning",
+        "message": "Refresh finished. Surfaced 0 jobs. No jobs found from any connector.",
+    }
+
+
 def test_build_search_state_view_model_reports_blocked_automatic_discovery() -> None:
     view_model = build_search_state_view_model(
         None,
@@ -1723,6 +1766,28 @@ def test_build_jobs_empty_state_view_model_reports_live_discovery_failure() -> N
     assert view_model["tone"] == "error"
     assert view_model["title"] == "Live job discovery failed."
     assert "search request timed out" in view_model["detail"]
+
+
+def test_build_search_state_view_model_keeps_live_discovery_failed_copy_when_sources_are_failed() -> None:
+    view_model = build_search_state_view_model(
+        None,
+        discovery_status={
+            "agentic_slice_status": {
+                "status": "live_discovery_failed",
+                "summary": "Live job discovery failed in the latest cycle. Failed worker(s): search. Failure: search_timeout. Error: search request timed out.",
+            },
+            "source_matrix": [
+                {"source_key": "search_web", "label": "Search Web", "classification": "not_working", "failed": True},
+                {"source_key": "x_search", "label": "X Search", "classification": "not_working", "failed": True},
+            ],
+        },
+    )
+
+    assert view_model["tone"] == "error"
+    assert view_model["badge"] == "Failed"
+    assert view_model["title"] == "Live job discovery failed."
+    assert "search request timed out" in view_model["detail"]
+    assert "Automatic discovery is not runnable." not in view_model["title"]
 
 
 def test_build_search_state_view_model_reports_disabled_live_discovery_state() -> None:
