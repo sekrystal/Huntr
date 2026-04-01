@@ -602,6 +602,7 @@ def _agentic_slice_status(
     agentic_leads: list[dict[str, object]],
     cycle_metrics: dict[str, object],
     source_matrix: list[dict[str, object]] | list[DiscoverySourceMatrixRow],
+    recent_search_runs: list[object] | None = None,
 ) -> dict[str, object]:
     if agentic_leads:
         return {
@@ -622,6 +623,47 @@ def _agentic_slice_status(
             "zero_yield": True,
             "reason": reason,
             "zero_yield_attempt_count": attempts,
+        }
+
+    search_fetch_diagnostics = dict(cycle_metrics.get("search_fetch_diagnostics") or {})
+    search_failure_status = str(search_fetch_diagnostics.get("status") or "").strip().lower()
+    if search_failure_status in {"failed", "error"}:
+        failure_classification = str(
+            search_fetch_diagnostics.get("failure_classification") or "search_runtime_error"
+        ).strip() or "search_runtime_error"
+        error = str(search_fetch_diagnostics.get("error") or "").strip()
+        worker_diagnostics = dict(search_fetch_diagnostics.get("worker_diagnostics") or {})
+        failed_workers = [
+            worker_name
+            for worker_name, diagnostics in worker_diagnostics.items()
+            if str((diagnostics or {}).get("status") or "").strip().lower() in {"failed", "error"}
+        ]
+        recent_failed_runs = [
+            run
+            for run in list(recent_search_runs or [])
+            if str(getattr(run, "status", "") or "").strip().lower() in {"failed", "error"}
+        ][:2]
+        summary_parts = ["Live job discovery failed in the latest cycle."]
+        if failed_workers:
+            summary_parts.append(f"Failed worker(s): {', '.join(failed_workers)}.")
+        summary_parts.append(f"Failure: {failure_classification}.")
+        if error:
+            summary_parts.append(f"Error: {error}.")
+        if recent_failed_runs:
+            latest_failed_run = recent_failed_runs[0]
+            run_queries = list(getattr(latest_failed_run, "queries", []) or [])
+            if run_queries:
+                summary_parts.append(f"Latest failed query: {run_queries[0]}.")
+        summary_parts.append("Check connector health and retry after fixing the runtime issue.")
+        return {
+            "status": "live_discovery_failed",
+            "summary": " ".join(summary_parts),
+            "verified_jobs": 0,
+            "zero_yield": False,
+            "live_runnable": True,
+            "failure_classification": failure_classification,
+            "error": error or None,
+            "failed_workers": failed_workers,
         }
 
     live_state = _live_job_discovery_state(source_matrix)
@@ -1332,7 +1374,12 @@ def build_discovery_status(session: Session) -> DiscoveryStatusResponse:
             if (lead.evidence_json or {}).get("suppression_category") == "location"
         ][:12],
         recent_agentic_leads=agentic_leads,
-        agentic_slice_status=_agentic_slice_status(agentic_leads, cycle_metrics, source_matrix),
+        agentic_slice_status=_agentic_slice_status(
+            agentic_leads,
+            cycle_metrics,
+            source_matrix,
+            recent_search_runs=recent_search_runs,
+        ),
         next_recommended_queries=[
             note
             for run in recent_runs

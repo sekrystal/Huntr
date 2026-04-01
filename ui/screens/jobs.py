@@ -269,6 +269,14 @@ def build_search_state_view_model(
                 "title": "Live job discovery is unavailable.",
                 "detail": summary or "Live discovery is not runnable in this environment.",
             }
+        if status == "live_discovery_failed":
+            return {
+                "tone": "error",
+                "eyebrow": "Discovery",
+                "badge": "Failed",
+                "title": "Live job discovery failed.",
+                "detail": summary or "The latest live discovery cycle failed before verified jobs could be shown.",
+            }
         if status == "no_verified_jobs":
             return {
                 "tone": "info",

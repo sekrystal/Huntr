@@ -1707,6 +1707,24 @@ def test_build_jobs_empty_state_view_model_reports_discovery_status_fetch_failur
     assert "Read timed out" in view_model["detail"]
 
 
+def test_build_jobs_empty_state_view_model_reports_live_discovery_failure() -> None:
+    view_model = build_jobs_empty_state_view_model(
+        None,
+        total_job_count=0,
+        filters={"search": "", "location": "", "remote_only": False},
+        discovery_status={
+            "agentic_slice_status": {
+                "status": "live_discovery_failed",
+                "summary": "Live job discovery failed in the latest cycle. Failed worker(s): search. Failure: search_timeout. Error: search request timed out.",
+            }
+        },
+    )
+
+    assert view_model["tone"] == "error"
+    assert view_model["title"] == "Live job discovery failed."
+    assert "search request timed out" in view_model["detail"]
+
+
 def test_build_jobs_empty_state_view_model_uses_search_run_truth_for_zero_results() -> None:
     view_model = build_jobs_empty_state_view_model(
         {

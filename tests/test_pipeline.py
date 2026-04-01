@@ -9,7 +9,7 @@ from sqlalchemy.orm import sessionmaker
 from connectors.search_web import ATSExtractionResult, SearchDiscoveryResult
 from core.config import Settings
 from core.schemas import LeadResponse
-from core.models import AgentActivity, AgentRun, Base, CompanyDiscovery, Lead, Listing
+from core.models import AgentActivity, AgentRun, Base, CompanyDiscovery, Lead, Listing, SearchRun
 from core.schemas import SyncResult
 from services.company_discovery import build_discovery_status
 from services.lead_search import build_search_document
@@ -1110,3 +1110,54 @@ def test_build_discovery_status_reports_live_discovery_unavailable_when_only_dem
     assert "Live job discovery is not runnable in this environment." in status.agentic_slice_status["summary"]
     assert "Search Web" in status.agentic_slice_status["summary"]
     assert "Greenhouse" in status.agentic_slice_status["summary"]
+
+
+def test_build_discovery_status_reports_latest_live_discovery_failure() -> None:
+    engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(engine)
+    session = sessionmaker(bind=engine, expire_on_commit=False)()
+    session.add(
+        SearchRun(
+            source_key="search_web",
+            worker_name="search",
+            provider="duckduckgo_html",
+            status="failed",
+            live=True,
+            query_count=1,
+            result_count=0,
+            queries_json=['"chief of staff" startup careers'],
+            failure_classification="search_timeout",
+            error="search request timed out",
+            diagnostics_json={"status": "failed", "failure_classification": "search_timeout", "error": "search request timed out"},
+        )
+    )
+    session.add(
+        AgentRun(
+            agent_name="Discovery",
+            action="recorded discovery cycle metrics",
+            summary="Discovery cycle metrics recorded.",
+            affected_count=0,
+            metadata_json={
+                "cycle_metrics": {
+                    "search_fetch_diagnostics": {
+                        "status": "failed",
+                        "failure_classification": "search_timeout",
+                        "error": "search request timed out",
+                        "worker_diagnostics": {
+                            "search": {"status": "failed", "failure_classification": "search_timeout", "error": "search request timed out"},
+                            "ats_resolver": {"status": "empty"},
+                        },
+                    }
+                }
+            },
+        )
+    )
+    session.commit()
+
+    status = build_discovery_status(session)
+
+    assert status.agentic_slice_status["status"] == "live_discovery_failed"
+    assert status.agentic_slice_status["failure_classification"] == "search_timeout"
+    assert status.agentic_slice_status["failed_workers"] == ["search"]
+    assert "search request timed out" in status.agentic_slice_status["summary"]
+    assert '"chief of staff" startup careers' in status.agentic_slice_status["summary"]
