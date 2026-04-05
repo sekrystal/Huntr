@@ -494,6 +494,17 @@ def build_manual_search_feedback(sync_result: dict[str, Any]) -> dict[str, str]:
     return {"tone": tone, "message": message}
 
 
+def build_manual_refresh_error_feedback(exc: Exception) -> dict[str, str]:
+    error_message = str(exc).strip() or exc.__class__.__name__
+    return {
+        "tone": "error",
+        "message": (
+            "Refresh failed before Jorb could verify live job discovery. "
+            f"Error: {error_message}. Check FastAPI and connector availability, then try Find jobs now again."
+        ),
+    }
+
+
 def render_search_status_region(
     search_run: dict[str, Any] | None,
     *,
@@ -598,6 +609,28 @@ def build_jobs_empty_state_view_model(
             "detail": "Clear filters or adjust the current search terms to see the latest jobs in this list.",
             "show_clear_filters": True,
         }
+
+    if search_run and not backend_search_active:
+        search_status = str(search_run.get("status") or "").strip().lower()
+        result_count = int(search_run.get("result_count") or 0)
+        if search_status == "results" and result_count == 0 and not _search_run_finished_with_zero_results(search_run):
+            query_count = int(search_run.get("query_count") or 0)
+            created_at = _parse_timestamp(search_run.get("created_at"))
+            created_label = (
+                created_at.astimezone(timezone.utc).strftime("%b %d, %Y %I:%M %p UTC")
+                if created_at is not None
+                else "unknown time"
+            )
+            return {
+                "tone": "info",
+                "eyebrow": "Search",
+                "title": "Search finished successfully.",
+                "detail": (
+                    f"The latest run found 0 jobs across {query_count} quer{'y' if query_count == 1 else 'ies'} "
+                    f"at {created_label}."
+                ),
+                "show_clear_filters": False,
+            }
 
     search_state = build_search_state_view_model(
         search_run,
@@ -1182,11 +1215,11 @@ def render_jobs_screen(
                 with st.spinner("Refreshing jobs..."):
                     result = run_manual_search_fn()
             except Exception as exc:
-                st.error(f"Refresh failed: {exc}")
+                st.session_state[feedback_key] = build_manual_refresh_error_feedback(exc)
             else:
                 st.session_state[feedback_key] = build_manual_search_feedback(result)
                 st.session_state[f"jobs-last-updated-{page_key}"] = datetime.now(timezone.utc)
-                st.rerun()
+            st.rerun()
         else:
             st.session_state[f"jobs-last-updated-{page_key}"] = datetime.now(timezone.utc)
             st.rerun()
